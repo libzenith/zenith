@@ -73,6 +73,9 @@ pub trait Timeline: Send + Sync {
     /// Get a list of non-relational objects
     fn list_nonrels<'a>(&'a self, lsn: Lsn) -> Result<Box<dyn Iterator<Item = ObjectTag> + 'a>>;
 
+    // Get total size of all relations in the timeline
+    fn get_timeline_size(&self, lsn: Lsn) -> Result<u64>;
+
     //------------------------------------------------------------------------------
     // Public PUT functions, to update the repository with new page versions.
     //

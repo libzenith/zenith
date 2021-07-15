@@ -247,6 +247,17 @@ impl<'a> Basebackup<'a> {
             &self.prev_record_lsn.0.to_le_bytes()[..],
         )?;
 
+        // send timeline size to enforce size quota
+        // TODO don't introduce new file. Add it to zenith.signal?
+        let last_lsn = self.timeline.get_last_valid_lsn();
+        let timeline_size = &self.timeline.get_timeline_size(last_lsn).unwrap();
+        info!("send timeline_size {}", timeline_size);
+
+        self.ar.append(
+            &new_tar_header("zenith.size", 8)?,
+            &timeline_size.to_le_bytes()[..],
+        )?;
+
         //send pg_control
         let pg_control_bytes = pg_control.encode();
         let header = new_tar_header("global/pg_control", pg_control_bytes.len() as u64)?;

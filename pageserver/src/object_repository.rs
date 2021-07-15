@@ -353,6 +353,26 @@ impl Timeline for ObjectTimeline {
         self.obj_store.list_objects(self.timelineid, true, lsn)
     }
 
+    // Get total size (in bytes) of all relations in the timeline
+    fn get_timeline_size(&self, lsn: Lsn) -> Result<u64>
+    {
+        // list of all relations in this timeline, including ancestor timelines
+        let all_rels = self.list_rels(0, 0, lsn)?;
+
+        let mut total_blocks: u64 = 0;
+
+        // This calculation is quite slow,
+        // but now we do it only once at compute node start.
+        for rel in all_rels {
+            match self.relsize_get_nowait(rel, lsn)? {
+                Some(nblocks) => { total_blocks += nblocks as u64 },
+                None => {},
+            }
+        }
+
+        Ok(total_blocks * pg_constants::BLCKSZ as u64)
+    }
+
     /// Get a list of all distinct relations in given tablespace and database.
     fn list_rels(&self, spcnode: u32, dbnode: u32, lsn: Lsn) -> Result<HashSet<RelTag>> {
         // List all relations in this timeline.
