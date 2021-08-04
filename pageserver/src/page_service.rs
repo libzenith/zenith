@@ -38,11 +38,14 @@ use crate::PageServerConf;
 use crate::ZTenantId;
 use crate::ZTimelineId;
 
+use postgres_ffi::pg_constants;
+
 // Wrapped in libpq CopyData
 enum PagestreamFeMessage {
     Exists(PagestreamRequest),
     Nblocks(PagestreamRequest),
     Read(PagestreamRequest),
+    DbSize(PagestreamRequest),
 }
 
 // Wrapped in libpq CopyData
@@ -50,6 +53,7 @@ enum PagestreamBeMessage {
     Status(PagestreamStatusResponse),
     Nblocks(PagestreamStatusResponse),
     Read(PagestreamReadResponse),
+    DbSize(PagestreamDbSizeResponse),
 }
 
 #[derive(Debug)]
@@ -75,6 +79,12 @@ struct PagestreamReadResponse {
     page: Bytes,
 }
 
+#[derive(Debug)]
+struct PagestreamDbSizeResponse {
+    ok: bool,
+    db_size: i64,
+}
+
 impl PagestreamFeMessage {
     fn parse(mut body: Bytes) -> anyhow::Result<PagestreamFeMessage> {
         // TODO these gets can fail
@@ -95,6 +105,7 @@ impl PagestreamFeMessage {
             0 => Ok(PagestreamFeMessage::Exists(zreq)),
             1 => Ok(PagestreamFeMessage::Nblocks(zreq)),
             2 => Ok(PagestreamFeMessage::Read(zreq)),
+            3 => Ok(PagestreamFeMessage::DbSize(zreq)),
             _ => Err(anyhow!(
                 "unknown smgr message tag: {},'{:?}'",
                 smgr_tag,
@@ -126,6 +137,12 @@ impl PagestreamBeMessage {
                 bytes.put_u8(resp.ok as u8);
                 bytes.put_u32(resp.n_blocks);
                 bytes.put(&resp.page[..]);
+            }
+
+            Self::DbSize(resp) => {
+                bytes.put_u8(103); /* tag from pagestore_client.h */
+                bytes.put_u8(resp.ok as u8);
+                bytes.put_i64(resp.db_size);
             }
         }
 
@@ -271,6 +288,21 @@ impl PageServerHandler {
 
                     PagestreamBeMessage::Nblocks(PagestreamStatusResponse { ok: true, n_blocks })
                 }
+
+                PagestreamFeMessage::DbSize(req) => {
+                    let all_rels = timeline.list_rels(req.spcnode, req.dbnode, req.lsn)?;
+                    let mut total_blocks: i64 = 0;
+
+                    for rel in all_rels {
+                        let n_blocks = timeline.get_rel_size(rel, req.lsn).unwrap_or(0);
+                        total_blocks += n_blocks as i64;
+                    }
+
+                    let db_size = total_blocks * pg_constants::BLCKSZ as i64;
+
+                    PagestreamBeMessage::DbSize(PagestreamDbSizeResponse { ok: true, db_size })
+                }
+
                 PagestreamFeMessage::Read(req) => {
                     let rel = RelTag {
                         spcnode: req.spcnode,
