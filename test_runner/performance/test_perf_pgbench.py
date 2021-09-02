@@ -1,6 +1,7 @@
 import os
 from contextlib import closing
 from fixtures.zenith_fixtures import PostgresFactory, ZenithPageserver
+import psycopg2
 
 pytest_plugins = ("fixtures.zenith_fixtures", "fixtures.benchmark_fixture")
 
@@ -14,6 +15,15 @@ def get_timeline_size(repo_dir: str, tenantid: str, timelineid: str):
 
         if 'wal' in dirs:
             dirs.remove('wal')  # don't visit 'wal' subdirectory
+
+    return totalbytes
+
+def get_dir_size(path: str):
+
+    totalbytes = 0
+    for root, dirs, files in os.walk(path):
+        for name in files:
+            totalbytes += os.path.getsize(os.path.join(root, name))
 
     return totalbytes
 
@@ -66,3 +76,39 @@ def test_pgbench(postgres: PostgresFactory, pageserver: ZenithPageserver, pg_bin
     # Report disk space used by the repository
     timeline_size = get_timeline_size(repo_dir, pageserver.initial_tenant, timeline)
     zenbenchmark.record('size', timeline_size / (1024*1024), 'MB')
+
+
+def test_baseline_pgbench(test_output_dir, pg_bin, zenbenchmark):
+    print("test_output_dir: " + test_output_dir)
+    pgdatadir = os.path.join(test_output_dir, 'pgdata-vanilla')
+    print("pgdatadir: " + pgdatadir)
+    pg_bin.run_capture(['initdb', '-D', pgdatadir])
+
+    conf = open(os.path.join(pgdatadir, 'postgresql.conf'), 'a')
+    conf.write('shared_buffers=1MB\n')
+    conf.close()
+
+    pg_bin.run_capture(['pg_ctl', '-D', pgdatadir, 'start'])
+
+    connstr = 'host=localhost port=5432 dbname=postgres'
+    conn = psycopg2.connect(connstr)
+    cur = conn.cursor()
+
+    with zenbenchmark.record_duration('init'):
+        pg_bin.run_capture(['pgbench', '-s5', '-i', connstr])
+
+        # This is roughly equivalent to flushing the layers from memory to disk with Zenith.
+        cur.execute(f"checkpoint")
+
+    # Run pgbench for 5000 transactions
+    with zenbenchmark.record_duration('5000_xacts'):
+        pg_bin.run_capture(['pgbench', '-c1', '-t5000', connstr])
+
+    # This is roughly equivalent to flush the layers from memory to disk with Zenith.
+    cur.execute(f"checkpoint")
+
+    # Report disk space used by the repository
+    data_size = get_dir_size(os.path.join(pgdatadir, 'base'))
+    zenbenchmark.record('data_size', data_size / (1024*1024), 'MB')
+    wal_size = get_dir_size(os.path.join(pgdatadir, 'pg_wal'))
+    zenbenchmark.record('wal_size', wal_size / (1024*1024), 'MB')
