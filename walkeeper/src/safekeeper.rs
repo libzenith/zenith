@@ -9,7 +9,6 @@ use bytes::Bytes;
 use log::*;
 use postgres_ffi::xlog_utils::TimeLineID;
 use serde::{Deserialize, Serialize};
-use std::cmp::max;
 use std::io;
 use std::io::Read;
 
@@ -267,6 +266,8 @@ pub trait Storage {
     fn persist(&mut self, s: &SafeKeeperState, sync: bool) -> Result<()>;
     /// Write piece of wal in buf to disk.
     fn write_wal(&mut self, s: &SafeKeeperState, startpos: Lsn, buf: &[u8]) -> Result<()>;
+    // Truncate WAL at specified LSN
+    fn truncate_wal(&mut self, s: &SafeKeeperState, endpos: Lsn) -> Result<()>;
 }
 
 /// SafeKeeper which consumes events (messages from compute) and provides
@@ -412,16 +413,13 @@ where
         self.storage
             .write_wal(&self.s, msg.h.begin_lsn, &msg.wal_data)?;
         let mut sync_control_file = false;
-        /*
-         * Epoch switch happen when written WAL record cross the boundary.
-         * The boundary is maximum of last WAL position at this node (FlushLSN) and global
-         * maximum (vcl) determined by WAL proposer during handshake.
-         * Switching epoch means that node completes recovery and start writing in the WAL new data.
-         * XXX: this is wrong, we must actively truncate not matching part of log.
-         */
-        if self.s.acceptor_state.epoch < msg.h.term
-            && msg.h.end_lsn > max(self.flush_lsn, msg.h.epoch_start_lsn)
-        {
+
+        // Truncate WAL behind VCL
+        if self.s.acceptor_state.epoch < msg.h.term && msg.h.end_lsn >= msg.h.epoch_start_lsn {
+            if msg.h.end_lsn < self.flush_lsn {
+                self.storage.truncate_wal(&self.s, msg.h.end_lsn)?;
+                self.flush_lsn = msg.h.end_lsn;
+            }
             info!("switched to new epoch {}", msg.h.term);
             self.s.acceptor_state.epoch = msg.h.term; /* bump epoch */
             sync_control_file = true;
@@ -482,6 +480,10 @@ mod tests {
         fn write_wal(&mut self, _s: &SafeKeeperState, _startpos: Lsn, _buf: &[u8]) -> Result<()> {
             Ok(())
         }
+
+        fn truncate_wal(&mut self, _s: &SafeKeeperState, _endpos: Lsn) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -523,7 +525,7 @@ mod tests {
 
         let mut ar_hdr = AppendRequestHeader {
             term: 1,
-            epoch_start_lsn: Lsn(2),
+            epoch_start_lsn: Lsn(3),
             begin_lsn: Lsn(1),
             end_lsn: Lsn(2),
             commit_lsn: Lsn(0),

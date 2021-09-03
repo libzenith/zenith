@@ -432,4 +432,80 @@ impl Storage for FileStorage {
         }
         Ok(())
     }
+
+    fn truncate_wal(&mut self, s: &SafeKeeperState, end_pos: Lsn) -> Result<()> {
+        let partial;
+        const ZERO_BLOCK: &[u8] = &[0u8; XLOG_BLCKSZ];
+        let wal_seg_size = s.server.wal_seg_size as usize;
+        let ztli = s.server.ztli;
+
+        /* Extract WAL location for this block */
+        let mut xlogoff = end_pos.segment_offset(wal_seg_size) as usize;
+
+        /* Open file */
+        let mut segno = end_pos.segment_number(wal_seg_size);
+        // note: we basically don't support changing pg timeline
+        let wal_file_name = XLogFileName(s.server.tli, segno, wal_seg_size);
+        let wal_file_path = self
+            .conf
+            .data_dir
+            .join(ztli.to_string())
+            .join(wal_file_name.clone());
+        let wal_file_partial_path = self
+            .conf
+            .data_dir
+            .join(ztli.to_string())
+            .join(wal_file_name.clone() + ".partial");
+        {
+            let mut wal_file: File;
+            /* Try to open already completed segment */
+            if let Ok(file) = OpenOptions::new().write(true).open(&wal_file_path) {
+                wal_file = file;
+                partial = false;
+            } else {
+                wal_file = OpenOptions::new()
+                    .write(true)
+                    .open(&wal_file_partial_path)?;
+                partial = true;
+            }
+            wal_file.seek(SeekFrom::Start(xlogoff as u64))?;
+            while xlogoff < wal_seg_size {
+                let bytes_to_write = min(XLOG_BLCKSZ, wal_seg_size - xlogoff);
+                wal_file.write_all(&ZERO_BLOCK[0..bytes_to_write])?;
+                xlogoff += bytes_to_write;
+            }
+            // Flush file, if not said otherwise
+            if !self.conf.no_sync {
+                wal_file.sync_all()?;
+            }
+        }
+        if !partial {
+            // Make segment partial once again
+            fs::rename(&wal_file_path, &wal_file_partial_path)?;
+        }
+        // Remove all subsequent segments
+        loop {
+            segno += 1;
+            let wal_file_name = XLogFileName(s.server.tli, segno, wal_seg_size);
+            let wal_file_path = self
+                .conf
+                .data_dir
+                .join(ztli.to_string())
+                .join(wal_file_name.clone());
+            let wal_file_partial_path = self
+                .conf
+                .data_dir
+                .join(ztli.to_string())
+                .join(wal_file_name.clone() + ".partial");
+            // TODO: better use fs::try_exists which is currenty avaialble only in nightly build
+            if wal_file_path.exists() {
+                fs::remove_file(&wal_file_path)?;
+            } else if wal_file_partial_path.exists() {
+                fs::remove_file(&wal_file_partial_path)?;
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
