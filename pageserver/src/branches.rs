@@ -155,7 +155,7 @@ pub fn create_repo(
     // Load data into pageserver
     // TODO To implement zenith import we need to
     //      move data loading out of create_repo()
-    bootstrap_timeline(conf, tenantid, tli, &*repo)?;
+    bootstrap_timeline(conf, tenantid, tli, repo.as_ref())?;
 
     Ok(repo)
 }
