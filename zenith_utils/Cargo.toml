@@ -13,6 +13,7 @@ hyper = { version = "0.14.7", features = ["full"] }
 lazy_static = "1.4.0"
 log = "0.4.14"
 postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="9eb0dbfbeb6a6c1b79099b9f7ae4a8c021877858" }
+postgres-types = { git = "https://github.com/zenithdb/rust-postgres.git", rev="9eb0dbfbeb6a6c1b79099b9f7ae4a8c021877858" }
 routerify = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"

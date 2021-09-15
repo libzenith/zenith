@@ -2572,6 +2572,7 @@ dependencies = [
  "lazy_static",
  "log",
  "postgres",
+ "postgres-types",
  "rand",
  "routerify",
  "rustls",

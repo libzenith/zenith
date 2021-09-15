@@ -37,7 +37,7 @@ use crate::branches;
 use crate::relish::*;
 use crate::repository::Timeline;
 use crate::tenant_mgr;
-use crate::walreceiver;
+use crate::walreceiver::StandardWalReceiver;
 use crate::PageServerConf;
 
 // Wrapped in libpq CopyData
@@ -552,7 +552,7 @@ impl postgres_backend::Handler for PageServerHandler {
             // Check that the timeline exists
             tenant_mgr::get_timeline_for_tenant(tenantid, timelineid)?;
 
-            walreceiver::launch_wal_receiver(self.conf, timelineid, &connstr, tenantid.to_owned());
+            StandardWalReceiver::launch(self.conf, connstr, timelineid, tenantid.to_owned());
 
             pgb.write_message_noflush(&BeMessage::CommandComplete(b"SELECT 1"))?;
         } else if query_string.starts_with("branch_create ") {

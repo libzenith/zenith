@@ -1,5 +1,6 @@
 #![warn(missing_docs)]
 
+use postgres_types::PgLsn;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ops::{Add, AddAssign};
@@ -114,6 +115,12 @@ impl From<u64> for Lsn {
 impl From<Lsn> for u64 {
     fn from(lsn: Lsn) -> u64 {
         lsn.0
+    }
+}
+
+impl Into<PgLsn> for Lsn {
+    fn into(self) -> PgLsn {
+        u64::from(self).into()
     }
 }
 
