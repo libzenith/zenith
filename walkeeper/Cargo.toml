@@ -19,8 +19,10 @@ daemonize = "0.4.1"
 rust-s3 = { version = "0.27.0-rc4", features = ["no-verify-ssl"] }
 tokio = "1.11"
 tokio-stream = { version = "0.1.4" }
-postgres-protocol = { git = "https://github.com/zenithdb/rust-postgres.git", rev="9eb0dbfbeb6a6c1b79099b9f7ae4a8c021877858" }
-postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="9eb0dbfbeb6a6c1b79099b9f7ae4a8c021877858" }
+postgres-protocol = { git = "https://github.com/zenithdb/rust-postgres.git", rev="f744467a9904ef8258605c20ac0f318efb7659db" }
+postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="f744467a9904ef8258605c20ac0f318efb7659db" }
+tokio-postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="f744467a9904ef8258605c20ac0f318efb7659db" }
+futures = "0.3.13"
 anyhow = "1.0"
 crc32c = "0.6.0"
 humantime = "2.1.0"

@@ -15,7 +15,7 @@ hex = "0.4.3"
 serde = "1"
 serde_json = "1"
 tokio = "1.11"
-tokio-postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="9eb0dbfbeb6a6c1b79099b9f7ae4a8c021877858" }
+tokio-postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="f744467a9904ef8258605c20ac0f318efb7659db" }
 clap = "2.33.0"
 rustls = "0.19.1"
 

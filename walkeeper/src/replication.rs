@@ -5,7 +5,10 @@ use crate::send_wal::SendWalHandler;
 use crate::timeline::{Timeline, TimelineTools};
 use crate::WalAcceptorConf;
 use anyhow::{anyhow, Context, Result};
-use bytes::Bytes;
+use bincode::Options;
+use bytes::{BufMut, Bytes, BytesMut};
+use futures::{SinkExt, StreamExt};
+use lazy_static::lazy_static;
 use log::*;
 use postgres_ffi::xlog_utils::{
     get_current_timestamp, TimeLineID, TimestampTz, XLogFileName, MAX_SEND_SIZE,
@@ -13,24 +16,31 @@ use postgres_ffi::xlog_utils::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 use std::{str, thread};
-use zenith_utils::bin_ser::BeSer;
+use tokio::runtime;
+use tokio_postgres::{CopyBothSink, CopyBothStream, NoTls};
+use zenith_utils::bin_ser::{be_coder, BeSer};
 use zenith_utils::lsn::Lsn;
 use zenith_utils::postgres_backend::PostgresBackend;
 use zenith_utils::pq_proto::{BeMessage, FeMessage, XLogDataBody};
 use zenith_utils::sock_split::ReadStream;
+use zenith_utils::zid::{ZTenantId, ZTimelineId};
 
 pub const END_REPLICATION_MARKER: Lsn = Lsn::MAX;
 
 // See: https://www.postgresql.org/docs/13/protocol-replication.html
 const HOT_STANDBY_FEEDBACK_TAG_BYTE: u8 = b'h';
 const STANDBY_STATUS_UPDATE_TAG_BYTE: u8 = b'r';
+const XLOG_DATA_TAG_BYTE: u8 = b'w';
+// Custom tag for push replication protocol. See: pageserver/src/walreceiver.rs.rs
+const START_LSN_TAG_BYTE: u8 = b'i';
 
 type FullTransactionId = u64;
 
@@ -59,6 +69,20 @@ pub struct StandardReplicationConn<'pg> {
 }
 
 struct StandardReplicationReciever(ReadStream);
+
+/// Network connection running the postgres replication protocol in the opposite direction to
+/// usual
+pub struct PushReplicationConn {
+    // Cached runtime to execute on
+    rt: tokio::runtime::Runtime,
+    send_sink: CopyBothSink<Bytes>,
+}
+
+struct PushReplicationReceiver {
+    // Cached runtime to execute on
+    rt: tokio::runtime::Runtime,
+    recv_stream: CopyBothStream,
+}
 
 /// Required functionality to implement the sending half of the replication protocol.
 ///
@@ -100,6 +124,34 @@ impl ReplicationReceiver for StandardReplicationReciever {
                 }
             };
         }
+    }
+}
+
+impl ReplicationSender for PushReplicationConn {
+    fn send_xlogdata(&mut self, data: XLogDataBody<&[u8]>) -> Result<()> {
+        let mut buf = BytesMut::new();
+        buf.put_u8(XLOG_DATA_TAG_BYTE);
+
+        let mut w = buf.writer();
+        // Serialization is taken
+        be_coder()
+            .serialize_into(&mut w, &data)
+            .context("failed to serialize XLogData")
+            .unwrap();
+
+        self.rt
+            .block_on(self.send_sink.send(w.into_inner().freeze()))?;
+        Ok(())
+    }
+}
+
+impl ReplicationReceiver for PushReplicationReceiver {
+    fn receive_copydata(&mut self) -> Result<Option<Bytes>> {
+        self.rt
+            .block_on(self.recv_stream.next())
+            // Go from Option<Result<_>> -> Result<Option<_>>
+            .transpose()
+            .map_err(|e| e.into())
     }
 }
 
@@ -244,6 +296,16 @@ fn open_wal_file(wal_file_path: &Path) -> Result<File> {
         })
 }
 
+// Helper function for deserializing a value with a particular leading tag byte
+fn deserialize_tagged<T: BeSer>(bytes: &[u8], expected_tag: u8) -> Result<T> {
+    let tag = bytes.get(0);
+    if tag != Some(&expected_tag) {
+        return Err(anyhow!("incorrect tag byte {:?}", tag));
+    }
+
+    T::des(&bytes[1..]).map_err(|e| e.into())
+}
+
 impl<'pg> StandardReplicationConn<'pg> {
     /// Create a new `ReplicationConn`
     pub fn new(pgb: &'pg mut PostgresBackend) -> Self {
@@ -313,6 +375,131 @@ impl<'pg> StandardReplicationConn<'pg> {
             &timeline,
             wal_seg_size as usize,
         )
+    }
+}
+
+lazy_static! {
+    static ref ACTIVE_PUSH_CONNS: Mutex<HashSet<ZTimelineId>> = Mutex::new(HashSet::new());
+}
+
+impl PushReplicationConn {
+    /// Starts a push connection to the pageserver in another thread. Returns `Err(())` if
+    /// we already have one running to the pageserver with the given timeline
+    ///
+    /// It's expected that `conf.pageserver_addr = Some(ps_addr)`, but not checked.
+    // ^ This avoids "unnecessary" unwraps.
+    //
+    // TODO: Do we want to return an error of some kind if the connection immediately
+    // fails? Would require some reworking, but easily possible to implement.
+    pub(crate) fn start(
+        ps_addr: String,
+        conf: WalAcceptorConf,
+        timeline: Arc<Timeline>,
+        tenantid: ZTenantId,
+        wal_seg_size: usize,
+    ) -> Result<()> {
+        debug_assert_eq!(Some(&ps_addr), conf.pageserver_addr.as_ref());
+
+        // If we already have an active connection to the pageserver on that timeline,
+        // don't create a new one.
+        if ACTIVE_PUSH_CONNS
+            .lock()
+            .unwrap()
+            .insert(timeline.timelineid)
+        {
+            info!(
+                "already connected to page server at {} on timeline {} for tenant {}",
+                ps_addr, timeline.timelineid, tenantid,
+            );
+            return Ok(());
+        }
+
+        info!(
+            "connecting to page server at {} on timeline {} for tenant {}",
+            ps_addr, timeline.timelineid, tenantid,
+        );
+
+        Self::start_new_connection(ps_addr, conf, timeline, tenantid, wal_seg_size)
+    }
+
+    /// Starts a fresh connection to the page server, without checking or updating
+    /// `ACTIVE_PUSH_CONNS`
+    ///
+    /// We get the connection off the ground before returning, just to make sure that
+    /// everything is ok and we're starting somewhere reasonable.
+    fn start_new_connection(
+        ps_addr: String,
+        conf: WalAcceptorConf,
+        timeline: Arc<Timeline>,
+        tenantid: ZTenantId,
+        wal_seg_size: usize,
+    ) -> Result<()> {
+        let rt = runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("failed to build tokio current-thread runtime");
+
+        // Connect to the page server:
+        let ps_connstr = format!(
+            "postgresql://no_user:{}@{}/no_db",
+            conf.pageserver_auth_token
+                .as_ref()
+                .unwrap_or(&String::new()),
+            ps_addr,
+        );
+
+        let (client, _connection) = rt
+            .block_on(tokio_postgres::connect(&ps_connstr, NoTls))
+            .with_context(|| format!("Failed to connect to pageserver {}", ps_connstr))?;
+
+        let (end_of_wal, tli) = timeline.get_end_of_wal();
+
+        let query_str = format!(
+            "START_PUSH_REPLICATION {} {} {}",
+            tenantid, timeline.timelineid, end_of_wal,
+        );
+
+        let (send_sink, mut recv_stream) = rt
+            .block_on(client.copy_both_simple::<Bytes>(&query_str))?
+            .split();
+
+        let stop_pos = Lsn(0);
+        let start_pos = {
+            let msg: Bytes = rt
+                .block_on(recv_stream.next())
+                .ok_or_else(|| anyhow!("failed to get replication start position"))?
+                .context("failed to get replication start position")?;
+
+            deserialize_tagged::<Lsn>(&msg, START_LSN_TAG_BYTE)
+                .context("failed to deserialize start LSN")?
+        };
+
+        // Once everything's started up correctly, properly run the connection:
+        let mut sender = PushReplicationConn { rt, send_sink };
+        let mut receiver = PushReplicationReceiver {
+            rt: runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .expect("failed to build tokio current-thread runtime"),
+            recv_stream,
+        };
+
+        let bg_timeline = timeline.clone();
+        thread::spawn(move || do_receive_loop(&mut receiver, bg_timeline));
+
+        thread::spawn(move || {
+            do_send_loop(
+                &mut sender,
+                &conf,
+                start_pos,
+                stop_pos,
+                tli,
+                &timeline,
+                wal_seg_size,
+            )
+        });
+
+        Ok(())
     }
 }
 

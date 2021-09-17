@@ -11,7 +11,8 @@ use crate::restore_local_repo;
 use crate::tenant_mgr;
 use crate::waldecoder::{decode_wal_record, WalStreamDecoder};
 use crate::PageServerConf;
-use anyhow::{Context, Error, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
+use bincode::config::Options;
 use bytes::Bytes;
 use lazy_static::lazy_static;
 use log::*;
@@ -20,11 +21,12 @@ use postgres::replication::ReplicationIter;
 use postgres::{Client, NoTls, SimpleQueryMessage, SimpleQueryRow};
 use postgres_ffi::xlog_utils::{IsXLogFileName, XLogFileName, XLogFromFileName, XLOG_BLCKSZ};
 use postgres_ffi::{pg_constants, CheckPoint};
+use postgres_protocol::message::backend::{PRIMARY_KEEPALIVE_TAG, XLOG_DATA_TAG};
 use postgres_protocol::PG_EPOCH;
 use postgres_types::PgLsn;
 use serde::{Deserialize, Serialize};
 use std::cmp::{max, min};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -33,9 +35,15 @@ use std::sync::Mutex;
 use std::thread;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
+use zenith_utils::bin_ser::{be_coder, BeSer};
 use zenith_utils::lsn::Lsn;
-use zenith_utils::pq_proto::XLogDataBody;
+use zenith_utils::postgres_backend::PostgresBackend;
+use zenith_utils::pq_proto::{BeMessage, FeMessage, XLogDataBody};
 use zenith_utils::zid::{ZTenantId, ZTimelineId};
+
+const STANDBY_STATUS_UPDTATE_TAG_BYTE: u8 = b'r';
+// Custom tag for push replication protocol. See: walkeeper/src/replication.rs
+const START_LSN_TAG_BYTE: u8 = b'i';
 
 /// Trait to generalize receiving the WAL over different connection types
 ///
@@ -155,11 +163,96 @@ impl<'client> WalReceiverConnection for StandardWalReceiver<'client> {
     }
 }
 
+/// Network connection for a PUSH_REPLICATION connection, as the backend handling it
+///
+/// This connection receives the WAL from the safekeepers.
+pub struct PushWalReceiver<'pg> {
+    pgb: &'pg mut PostgresBackend,
+}
+
+impl<'pg> WalReceiverConnection for PushWalReceiver<'pg> {
+    fn receive_message(&mut self) -> Result<Option<ReplicationMessage>> {
+        loop {
+            let msg = match self.pgb.read_message()? {
+                Some(m) => m,
+                None => return Ok(None),
+            };
+
+            let copy_data = match msg {
+                FeMessage::CopyData(d) => d,
+                FeMessage::CopyFail => return Err(anyhow!("Copy failed")),
+                FeMessage::CopyDone => return Ok(None),
+                FeMessage::Sync => continue,
+                _ => return Err(anyhow!("unexpected message {:?}", msg)),
+            };
+
+            // Separate based on the tag byte
+            match copy_data.first().cloned() {
+                Some(XLOG_DATA_TAG) => {
+                    let xlog_data = XLogDataBody::des(&copy_data[1..])
+                        .context("failed to deserialize XLogData")?;
+                    return Ok(Some(ReplicationMessage::XLogData(xlog_data)));
+                }
+                Some(PRIMARY_KEEPALIVE_TAG) => {
+                    let keepalive = PrimaryKeepAliveBody::des(&copy_data[1..])
+                        .context("failed to deserialize PrimaryKeepAlive")?;
+                    return Ok(Some(ReplicationMessage::PrimaryKeepAlive(keepalive)));
+                }
+                _ => return Err(anyhow!("unexpected CopyData message {:?}", copy_data)),
+            }
+        }
+    }
+
+    fn send_standby_status_update(
+        &mut self,
+        write_lsn: Lsn,
+        flush_lsn: Lsn,
+        apply_lsn: Lsn,
+        ts: SystemTime,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct StandbyStatusUpdate {
+            write_lsn: Lsn,
+            flush_lsn: Lsn,
+            apply_lsn: Lsn,
+            timestamp: i64,
+            // The postgres protocol expects this to have an additional boolean field,
+            // indicating whether we want the server to immediately respond. We never want
+            // that, so that byte isn't included here.
+        }
+
+        let update = StandbyStatusUpdate {
+            write_lsn,
+            flush_lsn,
+            apply_lsn,
+            timestamp: match ts.duration_since(*PG_EPOCH) {
+                Ok(d) => d.as_micros() as i64,
+                Err(e) => -(e.duration().as_micros() as i64),
+            },
+        };
+
+        let data = Self::serialize_with_tag(&update, STANDBY_STATUS_UPDTATE_TAG_BYTE)
+            .context("failed to serialize StandbyStatusUpdate")
+            // Serializing to a vector should never fail, so something has gone very wrong
+            // if it does
+            .unwrap();
+
+        self.pgb.write_message(&BeMessage::CopyData(&data))?;
+        Ok(())
+    }
+}
+
 lazy_static! {
     /// The active connections with `StandardWalReceiver` and their connection strings to the
     /// replication server
     static ref WAL_RECEIVERS: Mutex<HashMap<ZTimelineId, WalReceiverEntry>> =
         Mutex::new(HashMap::new());
+
+    /// The active connections with `PushWalReceiver`
+    ///
+    /// This isn't *strictly* necessary, but it exists so that we can check that we don't
+    /// end up with duplicate connections by the safekeeper.
+    static ref WAL_PUSH_RECEVIERS: Mutex<HashSet<ZTimelineId>> = Mutex::new(HashSet::new());
 }
 
 /// Entry in WAL_RECEIVERS, storing the connection string for each standard connection to a
@@ -298,6 +391,72 @@ impl<'c> StandardWalReceiver<'c> {
         )?;
 
         Ok(())
+    }
+}
+
+impl<'pg> PushWalReceiver<'pg> {
+    /// Main entrypoint for handling START_PUSH_REPLICATION
+    ///
+    /// Connection cleanup is left to the caller
+    pub fn run(
+        pgb: &mut PostgresBackend,
+        conf: &PageServerConf,
+        timelineid: ZTimelineId,
+        tenantid: ZTenantId,
+        end_of_wal: Lsn,
+    ) -> Result<()> {
+        // Check that we aren't already receiving for this timeline.
+        if WAL_PUSH_RECEVIERS.lock().unwrap().insert(timelineid) {
+            bail!("already receiving WAL for timeline")
+        }
+
+        info!("WAL push receiver started for timeline : '{}'", timelineid);
+
+        // Switch to copy-both mode so that we can receive the WAL & send feedback
+        pgb.write_message(&BeMessage::CopyBothResponse)?;
+
+        // Increment the gauge, then decrement it on exit.
+        let gauge = crate::LIVE_CONNECTIONS_COUNT.with_label_values(&["wal_push_receiver"]);
+        gauge.inc();
+        scopeguard::defer! {
+            gauge.dec();
+        }
+
+        let timeline = tenant_mgr::get_timeline_for_tenant(tenantid, timelineid)?;
+
+        let (last_rec_lsn, startpoint) = get_last_rec_lsn_and_startpoint(&*timeline);
+
+        // Inform the walkeeper where we want to start streaming from:
+        let msg_data = Self::serialize_with_tag(&startpoint, START_LSN_TAG_BYTE)
+            .context("failed to serialize LSN")
+            .unwrap();
+        pgb.write_message(&BeMessage::CopyData(&msg_data))
+            .context("failed to send replication startpoint")?;
+
+        let conn = PushWalReceiver { pgb };
+
+        walreceiver_loop(
+            conn,
+            conf,
+            tenantid,
+            timelineid,
+            &*timeline,
+            last_rec_lsn,
+            startpoint,
+            end_of_wal,
+        )?;
+
+        Ok(())
+    }
+
+    /// Helper function that serializes a value with a leading tag, returning a buffer
+    /// containing the bytes
+    ///
+    /// Any returned error will be from serialization failing.
+    fn serialize_with_tag<T: Serialize>(val: T, tag: u8) -> Result<Vec<u8>> {
+        let mut buf = be_coder().serialize(&val)?;
+        buf.insert(0, tag);
+        Ok(buf)
     }
 }
 
