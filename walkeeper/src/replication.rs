@@ -372,7 +372,7 @@ impl<'pg> StandardReplicationConn<'pg> {
             start_pos,
             stop_pos,
             tli,
-            &timeline,
+            timeline,
             wal_seg_size as usize,
         )
     }

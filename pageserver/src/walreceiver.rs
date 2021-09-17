@@ -471,6 +471,7 @@ fn get_last_rec_lsn_and_startpoint(timeline: &dyn Timeline) -> (Lsn, Lsn) {
 }
 
 /// Central logic for receiving the WAL, generic over the connection we get it from
+#[allow(clippy::too_many_arguments)]
 fn walreceiver_loop(
     mut conn: impl WalReceiverConnection,
     conf: &PageServerConf,

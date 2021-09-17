@@ -118,9 +118,9 @@ impl From<Lsn> for u64 {
     }
 }
 
-impl Into<PgLsn> for Lsn {
-    fn into(self) -> PgLsn {
-        u64::from(self).into()
+impl From<Lsn> for PgLsn {
+    fn from(lsn: Lsn) -> PgLsn {
+        u64::from(lsn).into()
     }
 }
 
