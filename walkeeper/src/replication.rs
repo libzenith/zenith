@@ -65,7 +65,7 @@ struct StandardReplicationReciever(ReadStream);
 /// Implemented for [`StandardReplication`] and [`PushReplication`]
 trait ReplicationSender {
     /// Sends XLogData over the connection
-    fn send_xlogdata(&mut self, data: XLogDataBody) -> Result<()>;
+    fn send_xlogdata(&mut self, data: XLogDataBody<&[u8]>) -> Result<()>;
 }
 
 /// Required functionality to implement the receiving half of the replication protcol
@@ -76,7 +76,7 @@ trait ReplicationReceiver {
 }
 
 impl<'pg> ReplicationSender for StandardReplicationConn<'pg> {
-    fn send_xlogdata(&mut self, data: XLogDataBody) -> Result<()> {
+    fn send_xlogdata(&mut self, data: XLogDataBody<&[u8]>) -> Result<()> {
         self.pgb.write_message(&BeMessage::XLogData(data))?;
         Ok(())
     }

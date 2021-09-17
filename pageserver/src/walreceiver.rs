@@ -20,8 +20,9 @@ use postgres::replication::ReplicationIter;
 use postgres::{Client, NoTls, SimpleQueryMessage, SimpleQueryRow};
 use postgres_ffi::xlog_utils::{IsXLogFileName, XLogFileName, XLogFromFileName, XLOG_BLCKSZ};
 use postgres_ffi::{pg_constants, CheckPoint};
-use postgres_protocol::message::backend::ReplicationMessage;
+use postgres_protocol::PG_EPOCH;
 use postgres_types::PgLsn;
+use serde::{Deserialize, Serialize};
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::fs;
@@ -33,14 +34,18 @@ use std::thread;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
 use zenith_utils::lsn::Lsn;
+use zenith_utils::pq_proto::XLogDataBody;
 use zenith_utils::zid::{ZTenantId, ZTimelineId};
 
 /// Trait to generalize receiving the WAL over different connection types
+///
+/// The primary usage of this trait is in [`walreceiver_loop`], which performs the bulk of
+/// the required logic relating to receiving the WAL.
 trait WalReceiverConnection {
     /// Blocks until receiving a replication message over the connection
     ///
     /// If the connection is closed, return `Err(None)`
-    fn receive_message(&mut self) -> Result<Option<ReplicationMessage<Bytes>>>;
+    fn receive_message(&mut self) -> Result<Option<ReplicationMessage>>;
 
     /// Sends a `StandbyStatusUpdate` message over the connection
     fn send_standby_status_update(
@@ -52,8 +57,20 @@ trait WalReceiverConnection {
     ) -> Result<()>;
 }
 
+enum ReplicationMessage {
+    XLogData(XLogDataBody<Bytes>),
+    PrimaryKeepAlive(PrimaryKeepAliveBody),
+}
+
+#[derive(Serialize, Deserialize)]
+struct PrimaryKeepAliveBody {
+    wal_end: u64,
+    timestamp: i64,
+    reply: u8,
+}
+
 impl<'a, C: WalReceiverConnection> WalReceiverConnection for &'a mut C {
-    fn receive_message(&mut self) -> Result<Option<ReplicationMessage<Bytes>>> {
+    fn receive_message(&mut self) -> Result<Option<ReplicationMessage>> {
         (*self).receive_message()
     }
 
@@ -69,13 +86,52 @@ impl<'a, C: WalReceiverConnection> WalReceiverConnection for &'a mut C {
 }
 
 /// Network connection for a standard postgres replication protocol client
+///
+/// This connection receives the WAL from postgres itself by connecting after a
+/// 'callmemaybe' request.
 pub struct StandardWalReceiver<'client> {
     stream: ReplicationIter<'client>,
 }
 
 impl<'client> WalReceiverConnection for StandardWalReceiver<'client> {
-    fn receive_message(&mut self) -> Result<Option<ReplicationMessage<Bytes>>> {
-        self.stream.next().map_err(|e| e.into())
+    fn receive_message(&mut self) -> Result<Option<ReplicationMessage>> {
+        use postgres_protocol::message::backend::ReplicationMessage::{PrimaryKeepAlive, XLogData};
+
+        let msg = match self.stream.next()? {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+
+        match msg {
+            XLogData(xld) => {
+                let xlog_data = XLogDataBody {
+                    wal_start: xld.wal_start(),
+                    wal_end: xld.wal_end(),
+                    timestamp: match xld.timestamp().duration_since(*PG_EPOCH) {
+                        Ok(d) => d.as_micros() as i64,
+                        Err(e) => -(e.duration().as_micros() as i64),
+                    },
+                    data: Bytes::clone(xld.data()),
+                };
+
+                Ok(Some(ReplicationMessage::XLogData(xlog_data)))
+            }
+            PrimaryKeepAlive(pka) => {
+                let keepalive = PrimaryKeepAliveBody {
+                    wal_end: pka.wal_end(),
+                    timestamp: match pka.timestamp().duration_since(*PG_EPOCH) {
+                        Ok(d) => d.as_micros() as i64,
+                        Err(e) => -(e.duration().as_micros() as i64),
+                    },
+                    reply: pka.reply(),
+                };
+
+                Ok(Some(ReplicationMessage::PrimaryKeepAlive(keepalive)))
+            }
+            // We have to have the wildcard at the bottom here because
+            // `ReplicationMessage` is marked as non-exhaustive.
+            _ => panic!("unrecognized replication message"),
+        }
     }
 
     fn send_standby_status_update(
@@ -113,6 +169,8 @@ struct WalReceiverEntry {
 }
 
 impl<'c> StandardWalReceiver<'c> {
+    /// Main entrypoint for handling 'callemaybe'
+    ///
     /// Launch a new standard WAL receiver, or tell one that's running about a change in the
     /// connection string
     pub fn launch(
@@ -292,8 +350,8 @@ fn walreceiver_loop(
             ReplicationMessage::XLogData(xlog_data) => {
                 // Pass the WAL data to the decoder, and see if we can decode
                 // more records as a result.
-                let data = xlog_data.data();
-                let startlsn = Lsn::from(xlog_data.wal_start());
+                let data = &xlog_data.data;
+                let startlsn = Lsn::from(xlog_data.wal_start);
                 let endlsn = startlsn + data.len() as u64;
                 let prev_last_rec_lsn = last_rec_lsn;
 
@@ -382,14 +440,12 @@ fn walreceiver_loop(
             }
 
             ReplicationMessage::PrimaryKeepAlive(keepalive) => {
-                let wal_end = keepalive.wal_end();
-                let timestamp = keepalive.timestamp();
-                let reply_requested = keepalive.reply() != 0;
+                let reply_requested = keepalive.reply != 0;
 
                 trace!(
                     "received PrimaryKeepAlive(wal_end: {}, timestamp: {:?} reply: {})",
-                    wal_end,
-                    timestamp,
+                    keepalive.wal_end,
+                    keepalive.timestamp,
                     reply_requested,
                 );
 
@@ -399,8 +455,6 @@ fn walreceiver_loop(
                     None
                 }
             }
-
-            _ => None,
         };
 
         if let Some(last_lsn) = status_update {
