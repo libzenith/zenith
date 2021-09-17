@@ -10,7 +10,7 @@ mod local_fs;
 mod rust_s3;
 /// A queue-based storage with the background machinery behind it to synchronize
 /// local page server layer files with external storage.
-pub mod storage_uploader;
+pub mod synced_storage;
 
 use std::path::Path;
 

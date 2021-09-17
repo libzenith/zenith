@@ -13,7 +13,7 @@ pub mod http;
 pub mod layered_repository;
 pub mod page_service;
 pub mod relish;
-mod relish_storage;
+pub mod relish_storage;
 pub mod repository;
 pub mod restore_local_repo;
 pub mod tenant_mgr;

@@ -25,7 +25,7 @@ pub fn init(
         let decorator = slog_term::PlainSyncDecorator::new(log_file.try_clone()?);
         let drain = slog_term::FullFormat::new(decorator)
             .build()
-            .filter_level(Level::Info)
+            .filter_level(Level::Debug)
             .fuse();
         let logger = slog::Logger::root(drain, slog::o!());
         slog_scope::set_global_logger(logger)
@@ -33,7 +33,7 @@ pub fn init(
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::FullFormat::new(decorator)
             .build()
-            .filter_level(Level::Info)
+            .filter_level(Level::Debug)
             .fuse();
         let drain = slog_async::Async::new(drain).chan_size(1000).build().fuse();
         let logger = slog::Logger::root(drain, slog::o!());

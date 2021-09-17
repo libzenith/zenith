@@ -1,7 +1,7 @@
 use std::{
     collections::BinaryHeap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -10,7 +10,7 @@ use anyhow::Context;
 use futures::stream::{FuturesUnordered, StreamExt};
 use zenith_utils::{lsn::Lsn, zid::ZTimelineId};
 
-use crate::{relish_storage::RelishStorage, RelishStorageConfig};
+use crate::{relish_storage::RelishStorage, PageServerConf, RelishStorageConfig};
 
 use super::{local_fs::LocalFs, rust_s3::RustS3};
 
@@ -30,47 +30,90 @@ pub struct LayerUpload {
     pub disk_relishes: Vec<PathBuf>,
 }
 
-pub struct RelishStorageWithBackgroundSync {
-    sync_tasks_queue: Arc<Mutex<BinaryHeap<SyncTask>>>,
+lazy_static::lazy_static! {
+    pub static ref RELISH_STORAGE_SYNC_QUEUE: Arc<RelishStorageSyncQueue> = Arc::new(RelishStorageSyncQueue::new());
 }
 
-impl RelishStorageWithBackgroundSync {
-    pub fn new(
-        config: &RelishStorageConfig,
-        page_server_workdir: &'static Path,
-    ) -> anyhow::Result<Self> {
-        let sync_tasks_queue = Arc::new(Mutex::new(BinaryHeap::new()));
-        let _handle = match config {
-            RelishStorageConfig::LocalFs(root) => {
-                let relish_storage = LocalFs::new(root.clone())?;
-                create_task_processing_thread(
-                    Arc::clone(&sync_tasks_queue),
-                    relish_storage,
-                    page_server_workdir,
-                )?
-            }
-            RelishStorageConfig::AwsS3(s3_config) => {
-                let relish_storage = RustS3::new(s3_config)?;
-                create_task_processing_thread(
-                    Arc::clone(&sync_tasks_queue),
-                    relish_storage,
-                    page_server_workdir,
-                )?
-            }
-        };
-        Ok(Self { sync_tasks_queue })
+pub struct RelishStorageSyncQueue {
+    enabled: AtomicBool,
+    queue: Mutex<BinaryHeap<SyncTask>>,
+}
+
+impl RelishStorageSyncQueue {
+    pub fn new() -> Self {
+        Self {
+            enabled: AtomicBool::new(true),
+            queue: Mutex::new(BinaryHeap::new()),
+        }
+    }
+
+    fn disable(&self) {
+        self.enabled
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.queue.lock().unwrap().clear();
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn upload_layer(&self, layer_upload: LayerUpload) {
-        self.sync_tasks_queue
-            .lock()
-            .unwrap()
-            .push(SyncTask::Upload(layer_upload));
+        if self.is_enabled() {
+            self.queue
+                .lock()
+                .unwrap()
+                .push(SyncTask::Upload(layer_upload));
+        }
+    }
+
+    fn next(&self) -> Option<SyncTask> {
+        if self.is_enabled() {
+            let mut queue_accessor = self.queue.lock().unwrap();
+            let new_task = queue_accessor.pop();
+            log::debug!("current storage queue length: {}", queue_accessor.len());
+            new_task
+        } else {
+            None
+        }
     }
 }
 
-fn create_task_processing_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
-    sync_tasks_queue: Arc<Mutex<BinaryHeap<SyncTask>>>,
+pub fn create_storage_sync_thread(
+    config: &'static PageServerConf,
+) -> anyhow::Result<Option<thread::JoinHandle<()>>> {
+    // TODO kb revert
+    // match &config.relish_storage_config {
+    //     Some(RelishStorageConfig::LocalFs(root)) => {
+    //         let relish_storage = LocalFs::new(root.clone())?;
+    //         Ok(Some(run_thread(
+    //             Arc::clone(&RELISH_STORAGE_SYNC_QUEUE),
+    //             relish_storage,
+    //             &config.workdir,
+    //         )?))
+    //     }
+    //     Some(RelishStorageConfig::AwsS3(s3_config)) => {
+    //         let relish_storage = RustS3::new(s3_config)?;
+    //         Ok(Some(run_thread(
+    //             Arc::clone(&RELISH_STORAGE_SYNC_QUEUE),
+    //             relish_storage,
+    //             &config.workdir,
+    //         )?))
+    //     }
+    //     None => {
+    //         RELISH_STORAGE_SYNC_QUEUE.disable();
+    //         Ok(None)
+    //     }
+    // }
+    let relish_storage = LocalFs::new(PathBuf::from("/Users/someonetoignore/Downloads/tmp_dir"))?;
+    Ok(Some(run_thread(
+        Arc::clone(&RELISH_STORAGE_SYNC_QUEUE),
+        relish_storage,
+        &config.workdir,
+    )?))
+}
+
+fn run_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
+    sync_tasks_queue: Arc<RelishStorageSyncQueue>,
     relish_storage: S,
     page_server_workdir: &'static Path,
 ) -> std::io::Result<thread::JoinHandle<()>> {
@@ -81,12 +124,7 @@ fn create_task_processing_thread<P, S: 'static + RelishStorage<RelishStoragePath
     thread::Builder::new()
         .name("Queue based relish storage sync".to_string())
         .spawn(move || loop {
-            let mut queue_accessor = sync_tasks_queue.lock().unwrap();
-            log::debug!("current storage queue length: {}", queue_accessor.len());
-            let sync_task = queue_accessor.pop();
-            drop(queue_accessor);
-
-            match sync_task {
+            match sync_tasks_queue.next() {
                 Some(task) => runtime.block_on(async {
                     match task {
                         SyncTask::Download(_timeline) | SyncTask::UrgentDownload(_timeline) => {
@@ -112,7 +150,7 @@ fn create_task_processing_thread<P, S: 'static + RelishStorage<RelishStoragePath
 }
 
 async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
-    sync_tasks_queue: &Mutex<BinaryHeap<SyncTask>>,
+    sync_tasks_queue: &RelishStorageSyncQueue,
     relish_storage: &S,
     page_server_workdir: &Path,
     layer_upload: LayerUpload,
@@ -167,13 +205,10 @@ async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
                     layer_upload.metadata_path.display(),
                     e
                 );
-                sync_tasks_queue
-                    .lock()
-                    .unwrap()
-                    .push(SyncTask::Upload(LayerUpload {
-                        disk_relishes: Vec::new(),
-                        ..layer_upload
-                    }));
+                sync_tasks_queue.upload_layer(LayerUpload {
+                    disk_relishes: Vec::new(),
+                    ..layer_upload
+                });
             }
         }
     } else {
@@ -181,13 +216,10 @@ async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
             "Failed to upload {} files, rescheduling the job",
             failed_relish_uploads.len()
         );
-        sync_tasks_queue
-            .lock()
-            .unwrap()
-            .push(SyncTask::Upload(LayerUpload {
-                disk_relishes: failed_relish_uploads,
-                ..layer_upload
-            }));
+        sync_tasks_queue.upload_layer(LayerUpload {
+            disk_relishes: failed_relish_uploads,
+            ..layer_upload
+        });
     }
 }
 
