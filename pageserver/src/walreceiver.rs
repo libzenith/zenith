@@ -5,23 +5,28 @@
 //!
 //! We keep one WAL receiver active per timeline.
 
-use crate::relish::*;
+use crate::relish::RelishTag;
+use crate::repository::Timeline;
 use crate::restore_local_repo;
 use crate::tenant_mgr;
-use crate::waldecoder::*;
+use crate::waldecoder::{decode_wal_record, WalStreamDecoder};
 use crate::PageServerConf;
-use anyhow::{Error, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
+use bincode::config::Options;
+use bytes::Bytes;
 use lazy_static::lazy_static;
 use log::*;
 use postgres::fallible_iterator::FallibleIterator;
 use postgres::replication::ReplicationIter;
 use postgres::{Client, NoTls, SimpleQueryMessage, SimpleQueryRow};
-use postgres_ffi::xlog_utils::*;
-use postgres_ffi::*;
-use postgres_protocol::message::backend::ReplicationMessage;
+use postgres_ffi::xlog_utils::{IsXLogFileName, XLogFileName, XLogFromFileName, XLOG_BLCKSZ};
+use postgres_ffi::{pg_constants, CheckPoint};
+use postgres_protocol::message::backend::{PRIMARY_KEEPALIVE_TAG, XLOG_DATA_TAG};
+use postgres_protocol::PG_EPOCH;
 use postgres_types::PgLsn;
+use serde::{Deserialize, Serialize};
 use std::cmp::{max, min};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -30,137 +35,457 @@ use std::sync::Mutex;
 use std::thread;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
+use zenith_utils::bin_ser::{be_coder, BeSer};
 use zenith_utils::lsn::Lsn;
-use zenith_utils::zid::ZTenantId;
-use zenith_utils::zid::ZTimelineId;
+use zenith_utils::postgres_backend::PostgresBackend;
+use zenith_utils::pq_proto::{BeMessage, FeMessage, XLogDataBody};
+use zenith_utils::zid::{ZTenantId, ZTimelineId};
 
-//
-// We keep one WAL Receiver active per timeline.
-//
+const STANDBY_STATUS_UPDTATE_TAG_BYTE: u8 = b'r';
+// Custom tag for push replication protocol. See: walkeeper/src/replication.rs
+const START_LSN_TAG_BYTE: u8 = b'i';
+
+/// Trait to generalize receiving the WAL over different connection types
+///
+/// The primary usage of this trait is in [`walreceiver_loop`], which performs the bulk of
+/// the required logic relating to receiving the WAL.
+trait WalReceiverConnection {
+    /// Blocks until receiving a replication message over the connection
+    ///
+    /// If the connection is closed, return `Err(None)`
+    fn receive_message(&mut self) -> Result<Option<ReplicationMessage>>;
+
+    /// Sends a `StandbyStatusUpdate` message over the connection
+    fn send_standby_status_update(
+        &mut self,
+        write_lsn: Lsn,
+        flush_lsn: Lsn,
+        apply_lsn: Lsn,
+        ts: SystemTime,
+    ) -> Result<()>;
+}
+
+enum ReplicationMessage {
+    XLogData(XLogDataBody<Bytes>),
+    PrimaryKeepAlive(PrimaryKeepAliveBody),
+}
+
+#[derive(Serialize, Deserialize)]
+struct PrimaryKeepAliveBody {
+    wal_end: u64,
+    timestamp: i64,
+    reply: u8,
+}
+
+impl<'a, C: WalReceiverConnection> WalReceiverConnection for &'a mut C {
+    fn receive_message(&mut self) -> Result<Option<ReplicationMessage>> {
+        (*self).receive_message()
+    }
+
+    fn send_standby_status_update(
+        &mut self,
+        write_lsn: Lsn,
+        flush_lsn: Lsn,
+        apply_lsn: Lsn,
+        ts: SystemTime,
+    ) -> Result<()> {
+        (*self).send_standby_status_update(write_lsn, flush_lsn, apply_lsn, ts)
+    }
+}
+
+/// Network connection for a standard postgres replication protocol client
+///
+/// This connection receives the WAL from postgres itself by connecting after a
+/// 'callmemaybe' request.
+pub struct StandardWalReceiver<'client> {
+    stream: ReplicationIter<'client>,
+}
+
+impl<'client> WalReceiverConnection for StandardWalReceiver<'client> {
+    fn receive_message(&mut self) -> Result<Option<ReplicationMessage>> {
+        use postgres_protocol::message::backend::ReplicationMessage::{PrimaryKeepAlive, XLogData};
+
+        let msg = match self.stream.next()? {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+
+        match msg {
+            XLogData(xld) => {
+                let xlog_data = XLogDataBody {
+                    wal_start: xld.wal_start(),
+                    wal_end: xld.wal_end(),
+                    timestamp: match xld.timestamp().duration_since(*PG_EPOCH) {
+                        Ok(d) => d.as_micros() as i64,
+                        Err(e) => -(e.duration().as_micros() as i64),
+                    },
+                    data: Bytes::clone(xld.data()),
+                };
+
+                Ok(Some(ReplicationMessage::XLogData(xlog_data)))
+            }
+            PrimaryKeepAlive(pka) => {
+                let keepalive = PrimaryKeepAliveBody {
+                    wal_end: pka.wal_end(),
+                    timestamp: match pka.timestamp().duration_since(*PG_EPOCH) {
+                        Ok(d) => d.as_micros() as i64,
+                        Err(e) => -(e.duration().as_micros() as i64),
+                    },
+                    reply: pka.reply(),
+                };
+
+                Ok(Some(ReplicationMessage::PrimaryKeepAlive(keepalive)))
+            }
+            // We have to have the wildcard at the bottom here because
+            // `ReplicationMessage` is marked as non-exhaustive.
+            _ => panic!("unrecognized replication message"),
+        }
+    }
+
+    fn send_standby_status_update(
+        &mut self,
+        write_lsn: Lsn,
+        flush_lsn: Lsn,
+        apply_lsn: Lsn,
+        ts: SystemTime,
+    ) -> Result<()> {
+        const NO_REPLY: u8 = 0;
+
+        self.stream.standby_status_update(
+            write_lsn.into(),
+            flush_lsn.into(),
+            apply_lsn.into(),
+            ts,
+            NO_REPLY,
+        )?;
+
+        Ok(())
+    }
+}
+
+/// Network connection for a PUSH_REPLICATION connection, as the backend handling it
+///
+/// This connection receives the WAL from the safekeepers.
+pub struct PushWalReceiver<'pg> {
+    pgb: &'pg mut PostgresBackend,
+}
+
+impl<'pg> WalReceiverConnection for PushWalReceiver<'pg> {
+    fn receive_message(&mut self) -> Result<Option<ReplicationMessage>> {
+        loop {
+            let msg = match self.pgb.read_message()? {
+                Some(m) => m,
+                None => return Ok(None),
+            };
+
+            let copy_data = match msg {
+                FeMessage::CopyData(d) => d,
+                FeMessage::CopyFail => return Err(anyhow!("Copy failed")),
+                FeMessage::CopyDone => return Ok(None),
+                FeMessage::Sync => continue,
+                _ => return Err(anyhow!("unexpected message {:?}", msg)),
+            };
+
+            // Separate based on the tag byte
+            match copy_data.first().cloned() {
+                Some(XLOG_DATA_TAG) => {
+                    let xlog_data = XLogDataBody::des(&copy_data[1..])
+                        .context("failed to deserialize XLogData")?;
+                    return Ok(Some(ReplicationMessage::XLogData(xlog_data)));
+                }
+                Some(PRIMARY_KEEPALIVE_TAG) => {
+                    let keepalive = PrimaryKeepAliveBody::des(&copy_data[1..])
+                        .context("failed to deserialize PrimaryKeepAlive")?;
+                    return Ok(Some(ReplicationMessage::PrimaryKeepAlive(keepalive)));
+                }
+                _ => return Err(anyhow!("unexpected CopyData message {:?}", copy_data)),
+            }
+        }
+    }
+
+    fn send_standby_status_update(
+        &mut self,
+        write_lsn: Lsn,
+        flush_lsn: Lsn,
+        apply_lsn: Lsn,
+        ts: SystemTime,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct StandbyStatusUpdate {
+            write_lsn: Lsn,
+            flush_lsn: Lsn,
+            apply_lsn: Lsn,
+            timestamp: i64,
+            // The postgres protocol expects this to have an additional boolean field,
+            // indicating whether we want the server to immediately respond. We never want
+            // that, so that byte isn't included here.
+        }
+
+        let update = StandbyStatusUpdate {
+            write_lsn,
+            flush_lsn,
+            apply_lsn,
+            timestamp: match ts.duration_since(*PG_EPOCH) {
+                Ok(d) => d.as_micros() as i64,
+                Err(e) => -(e.duration().as_micros() as i64),
+            },
+        };
+
+        let data = Self::serialize_with_tag(&update, STANDBY_STATUS_UPDTATE_TAG_BYTE)
+            .context("failed to serialize StandbyStatusUpdate")
+            // Serializing to a vector should never fail, so something has gone very wrong
+            // if it does
+            .unwrap();
+
+        self.pgb.write_message(&BeMessage::CopyData(&data))?;
+        Ok(())
+    }
+}
+
+lazy_static! {
+    /// The active connections with `StandardWalReceiver` and their connection strings to the
+    /// replication server
+    static ref WAL_RECEIVERS: Mutex<HashMap<ZTimelineId, WalReceiverEntry>> =
+        Mutex::new(HashMap::new());
+
+    /// The active connections with `PushWalReceiver`
+    ///
+    /// This isn't *strictly* necessary, but it exists so that we can check that we don't
+    /// end up with duplicate connections by the safekeeper.
+    static ref WAL_PUSH_RECEVIERS: Mutex<HashSet<ZTimelineId>> = Mutex::new(HashSet::new());
+}
+
+/// Entry in WAL_RECEIVERS, storing the connection string for each standard connection to a
+/// replication server
 struct WalReceiverEntry {
     wal_producer_connstr: String,
 }
 
-lazy_static! {
-    static ref WAL_RECEIVERS: Mutex<HashMap<ZTimelineId, WalReceiverEntry>> =
-        Mutex::new(HashMap::new());
-}
+impl<'c> StandardWalReceiver<'c> {
+    /// Main entrypoint for handling 'callemaybe'
+    ///
+    /// Launch a new standard WAL receiver, or tell one that's running about a change in the
+    /// connection string
+    pub fn launch(
+        conf: &'static PageServerConf,
+        wal_producer_connstr: String,
+        timelineid: ZTimelineId,
+        tenantid: ZTenantId,
+    ) {
+        let mut receivers = WAL_RECEIVERS.lock().unwrap();
 
-// Launch a new WAL receiver, or tell one that's running about change in connection string
-pub fn launch_wal_receiver(
-    conf: &'static PageServerConf,
-    timelineid: ZTimelineId,
-    wal_producer_connstr: &str,
-    tenantid: ZTenantId,
-) {
-    let mut receivers = WAL_RECEIVERS.lock().unwrap();
+        match receivers.get_mut(&timelineid) {
+            Some(receiver) => {
+                receiver.wal_producer_connstr = wal_producer_connstr;
+            }
+            None => {
+                let receiver = WalReceiverEntry {
+                    wal_producer_connstr,
+                };
+                receivers.insert(timelineid, receiver);
 
-    match receivers.get_mut(&timelineid) {
-        Some(receiver) => {
-            receiver.wal_producer_connstr = wal_producer_connstr.into();
+                // Also launch a new thread to handle this connection
+                //
+                // NOTE: This thread name is checked in the assertion in wait_lsn. If you change
+                // this, make sure you update the assertion too.
+                let _walreceiver_thread = thread::Builder::new()
+                    .name("WAL receiver thread".into())
+                    .spawn(move || {
+                        Self::thread_main(conf, timelineid, tenantid);
+                    })
+                    .unwrap();
+            }
+        };
+    }
+
+    /// Look up current WAL producer connection string in the hash table
+    fn get_wal_producer_connstr(timelineid: ZTimelineId) -> String {
+        let receivers = WAL_RECEIVERS.lock().unwrap();
+
+        receivers
+            .get(&timelineid)
+            .unwrap()
+            .wal_producer_connstr
+            .clone()
+    }
+
+    ///
+    /// This is the entry point for the WAL receiver thread.
+    ///
+    fn thread_main(conf: &'static PageServerConf, timelineid: ZTimelineId, tenantid: ZTenantId) {
+        info!(
+            "WAL receiver thread started for timeline : '{}'",
+            timelineid
+        );
+
+        //
+        // Make a connection to the WAL safekeeper, or directly to the primary PostgreSQL server,
+        // and start streaming WAL from it. If the connection is lost, keep retrying.
+        //
+        loop {
+            // Look up the current WAL producer address
+            let wal_producer_connstr = Self::get_wal_producer_connstr(timelineid);
+
+            let res = Self::walreceiver_main(conf, timelineid, &wal_producer_connstr, tenantid);
+
+            if let Err(e) = res {
+                info!(
+                    "WAL streaming connection failed ({}), retrying in 1 second",
+                    e
+                );
+                sleep(Duration::from_secs(1));
+            }
         }
-        None => {
-            let receiver = WalReceiverEntry {
-                wal_producer_connstr: wal_producer_connstr.into(),
-            };
-            receivers.insert(timelineid, receiver);
+    }
 
-            // Also launch a new thread to handle this connection
-            //
-            // NOTE: This thread name is checked in the assertion in wait_lsn. If you change
-            // this, make sure you update the assertion too.
-            let _walreceiver_thread = thread::Builder::new()
-                .name("WAL receiver thread".into())
-                .spawn(move || {
-                    thread_main(conf, timelineid, tenantid);
-                })
-                .unwrap();
+    fn walreceiver_main(
+        conf: &PageServerConf,
+        timelineid: ZTimelineId,
+        wal_producer_connstr: &str,
+        tenantid: ZTenantId,
+    ) -> Result<(), Error> {
+        // Connect to the database in replication mode.
+        info!("connecting to {:?}", wal_producer_connstr);
+        let connect_cfg = format!(
+            "{} application_name=pageserver replication=true",
+            wal_producer_connstr
+        );
+
+        let mut rclient = Client::connect(&connect_cfg, NoTls)?;
+        info!("connected!");
+
+        // Immediately increment the gauge, then create a job to decrement it on thread exit.
+        // One of the pros of `defer!` is that this will *most probably*
+        // get called, even in presence of panics.
+        let gauge = crate::LIVE_CONNECTIONS_COUNT.with_label_values(&["wal_receiver"]);
+        gauge.inc();
+        scopeguard::defer! {
+            gauge.dec();
         }
-    };
-}
 
-// Look up current WAL producer connection string in the hash table
-fn get_wal_producer_connstr(timelineid: ZTimelineId) -> String {
-    let receivers = WAL_RECEIVERS.lock().unwrap();
+        let identify = identify_system(&mut rclient)?;
+        info!("{:?}", identify);
+        let end_of_wal = Lsn::from(u64::from(identify.xlogpos));
 
-    receivers
-        .get(&timelineid)
-        .unwrap()
-        .wal_producer_connstr
-        .clone()
-}
+        let timeline = tenant_mgr::get_timeline_for_tenant(tenantid, timelineid)?;
 
-//
-// This is the entry point for the WAL receiver thread.
-//
-fn thread_main(conf: &'static PageServerConf, timelineid: ZTimelineId, tenantid: ZTenantId) {
-    info!(
-        "WAL receiver thread started for timeline : '{}'",
-        timelineid
-    );
+        let (last_rec_lsn, startpoint) = get_last_rec_lsn_and_startpoint(&*timeline);
 
-    //
-    // Make a connection to the WAL safekeeper, or directly to the primary PostgreSQL server,
-    // and start streaming WAL from it. If the connection is lost, keep retrying.
-    //
-    loop {
-        // Look up the current WAL producer address
-        let wal_producer_connstr = get_wal_producer_connstr(timelineid);
+        let query = format!("START_REPLICATION PHYSICAL {}", startpoint);
 
-        let res = walreceiver_main(conf, timelineid, &wal_producer_connstr, tenantid);
+        let copy_stream = rclient.copy_both_simple(&query)?;
 
-        if let Err(e) = res {
-            info!(
-                "WAL streaming connection failed ({}), retrying in 1 second",
-                e
-            );
-            sleep(Duration::from_secs(1));
-        }
+        let conn = StandardWalReceiver {
+            stream: ReplicationIter::new(copy_stream),
+        };
+
+        walreceiver_loop(
+            conn,
+            conf,
+            tenantid,
+            timelineid,
+            &*timeline,
+            last_rec_lsn,
+            startpoint,
+            end_of_wal,
+        )?;
+
+        Ok(())
     }
 }
 
-fn walreceiver_main(
-    conf: &PageServerConf,
-    timelineid: ZTimelineId,
-    wal_producer_connstr: &str,
-    tenantid: ZTenantId,
-) -> Result<(), Error> {
-    // Connect to the database in replication mode.
-    info!("connecting to {:?}", wal_producer_connstr);
-    let connect_cfg = format!(
-        "{} application_name=pageserver replication=true",
-        wal_producer_connstr
-    );
+impl<'pg> PushWalReceiver<'pg> {
+    /// Main entrypoint for handling START_PUSH_REPLICATION
+    ///
+    /// Connection cleanup is left to the caller
+    pub fn run(
+        pgb: &mut PostgresBackend,
+        conf: &PageServerConf,
+        timelineid: ZTimelineId,
+        tenantid: ZTenantId,
+        end_of_wal: Lsn,
+    ) -> Result<()> {
+        // Check that we aren't already receiving for this timeline.
+        if WAL_PUSH_RECEVIERS.lock().unwrap().insert(timelineid) {
+            bail!("already receiving WAL for timeline")
+        }
 
-    let mut rclient = Client::connect(&connect_cfg, NoTls)?;
-    info!("connected!");
+        info!("WAL push receiver started for timeline : '{}'", timelineid);
 
-    // Immediately increment the gauge, then create a job to decrement it on thread exit.
-    // One of the pros of `defer!` is that this will *most probably*
-    // get called, even in presence of panics.
-    let gauge = crate::LIVE_CONNECTIONS_COUNT.with_label_values(&["wal_receiver"]);
-    gauge.inc();
-    scopeguard::defer! {
-        gauge.dec();
+        // Switch to copy-both mode so that we can receive the WAL & send feedback
+        pgb.write_message(&BeMessage::CopyBothResponse)?;
+
+        // Increment the gauge, then decrement it on exit.
+        let gauge = crate::LIVE_CONNECTIONS_COUNT.with_label_values(&["wal_push_receiver"]);
+        gauge.inc();
+        scopeguard::defer! {
+            gauge.dec();
+        }
+
+        let timeline = tenant_mgr::get_timeline_for_tenant(tenantid, timelineid)?;
+
+        let (last_rec_lsn, startpoint) = get_last_rec_lsn_and_startpoint(&*timeline);
+
+        // Inform the walkeeper where we want to start streaming from:
+        let msg_data = Self::serialize_with_tag(&startpoint, START_LSN_TAG_BYTE)
+            .context("failed to serialize LSN")
+            .unwrap();
+        pgb.write_message(&BeMessage::CopyData(&msg_data))
+            .context("failed to send replication startpoint")?;
+
+        let conn = PushWalReceiver { pgb };
+
+        walreceiver_loop(
+            conn,
+            conf,
+            tenantid,
+            timelineid,
+            &*timeline,
+            last_rec_lsn,
+            startpoint,
+            end_of_wal,
+        )?;
+
+        Ok(())
     }
 
-    let identify = identify_system(&mut rclient)?;
-    info!("{:?}", identify);
-    let end_of_wal = Lsn::from(u64::from(identify.xlogpos));
-    let mut caught_up = false;
+    /// Helper function that serializes a value with a leading tag, returning a buffer
+    /// containing the bytes
+    ///
+    /// Any returned error will be from serialization failing.
+    fn serialize_with_tag<T: Serialize>(val: T, tag: u8) -> Result<Vec<u8>> {
+        let mut buf = be_coder().serialize(&val)?;
+        buf.insert(0, tag);
+        Ok(buf)
+    }
+}
 
-    let timeline = tenant_mgr::get_timeline_for_tenant(tenantid, timelineid)?;
-
-    //
-    // Start streaming the WAL, from where we left off previously.
-    //
+/// Helper function, to be called before `walreceiver_loop`: returns (last_rec_lsn, startpoint)
+fn get_last_rec_lsn_and_startpoint(timeline: &dyn Timeline) -> (Lsn, Lsn) {
     // If we had previously received WAL up to some point in the middle of a WAL record, we
     // better start from the end of last full WAL record, not in the middle of one.
-    let mut last_rec_lsn = timeline.get_last_record_lsn();
-    let mut startpoint = last_rec_lsn;
+    let last_rec_lsn = timeline.get_last_record_lsn();
+    let startpoint = last_rec_lsn;
+
+    (last_rec_lsn, startpoint)
+}
+
+/// Central logic for receiving the WAL, generic over the connection we get it from
+#[allow(clippy::too_many_arguments)]
+fn walreceiver_loop(
+    mut conn: impl WalReceiverConnection,
+    conf: &PageServerConf,
+    tenantid: ZTenantId,
+    timelineid: ZTimelineId,
+    timeline: &dyn Timeline,
+    mut last_rec_lsn: Lsn,
+    mut startpoint: Lsn,
+    end_of_wal: Lsn, // Server's xlogpos
+) -> Result<()> {
+    let mut caught_up = false;
 
     if startpoint == Lsn(0) {
-        error!("No previous WAL position");
+        error!("No previous WAL position for timeline {}", timelineid);
     }
 
     // There might be some padding after the last full record, skip it.
@@ -171,24 +496,22 @@ fn walreceiver_main(
         last_rec_lsn, startpoint, timelineid, end_of_wal
     );
 
-    let query = format!("START_REPLICATION PHYSICAL {}", startpoint);
-
-    let copy_stream = rclient.copy_both_simple(&query)?;
-    let mut physical_stream = ReplicationIter::new(copy_stream);
-
     let mut waldecoder = WalStreamDecoder::new(startpoint);
 
     let checkpoint_bytes = timeline.get_page_at_lsn(RelishTag::Checkpoint, 0, startpoint)?;
     let mut checkpoint = CheckPoint::decode(&checkpoint_bytes)?;
     trace!("CheckPoint.nextXid = {}", checkpoint.nextXid.value);
 
-    while let Some(replication_message) = physical_stream.next()? {
+    while let Some(replication_message) = conn
+        .receive_message()
+        .context("failed to read replication message")?
+    {
         let status_update = match replication_message {
             ReplicationMessage::XLogData(xlog_data) => {
                 // Pass the WAL data to the decoder, and see if we can decode
                 // more records as a result.
-                let data = xlog_data.data();
-                let startlsn = Lsn::from(xlog_data.wal_start());
+                let data = &xlog_data.data;
+                let startlsn = Lsn::from(xlog_data.wal_start);
                 let endlsn = startlsn + data.len() as u64;
                 let prev_last_rec_lsn = last_rec_lsn;
 
@@ -277,14 +600,12 @@ fn walreceiver_main(
             }
 
             ReplicationMessage::PrimaryKeepAlive(keepalive) => {
-                let wal_end = keepalive.wal_end();
-                let timestamp = keepalive.timestamp();
-                let reply_requested = keepalive.reply() != 0;
+                let reply_requested = keepalive.reply != 0;
 
                 trace!(
                     "received PrimaryKeepAlive(wal_end: {}, timestamp: {:?} reply: {})",
-                    wal_end,
-                    timestamp,
+                    keepalive.wal_end,
+                    keepalive.timestamp,
                     reply_requested,
                 );
 
@@ -294,22 +615,19 @@ fn walreceiver_main(
                     None
                 }
             }
-
-            _ => None,
         };
 
         if let Some(last_lsn) = status_update {
             // TODO: More thought should go into what values are sent here.
-            let last_lsn = PgLsn::from(u64::from(last_lsn));
             let write_lsn = last_lsn;
             let flush_lsn = last_lsn;
-            let apply_lsn = PgLsn::from(0);
+            let apply_lsn = Lsn::from(0);
             let ts = SystemTime::now();
-            const NO_REPLY: u8 = 0;
 
-            physical_stream.standby_status_update(write_lsn, flush_lsn, apply_lsn, ts, NO_REPLY)?;
+            conn.send_standby_status_update(write_lsn, flush_lsn, apply_lsn, ts)?;
         }
     }
+
     Ok(())
 }
 

@@ -3,7 +3,7 @@
 //!
 
 use crate::receive_wal::ReceiveWalConn;
-use crate::replication::ReplicationConn;
+use crate::replication::StandardReplicationConn;
 use crate::timeline::{Timeline, TimelineTools};
 use crate::WalAcceptorConf;
 use anyhow::{anyhow, bail, Result};
@@ -71,7 +71,7 @@ impl postgres_backend::Handler for SendWalHandler {
             self.handle_identify_system(pgb)?;
             Ok(())
         } else if query_string.starts_with(b"START_REPLICATION") {
-            ReplicationConn::new(pgb).run(self, pgb, &query_string)?;
+            StandardReplicationConn::new(pgb).run(self, &query_string)?;
             Ok(())
         } else if query_string.starts_with(b"START_WAL_PUSH") {
             ReceiveWalConn::new(pgb)?.run(self)?;

@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, Result};
 use byteorder::{BigEndian, ByteOrder};
 use byteorder::{ReadBytesExt, BE};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use serde::{Deserialize, Serialize};
 // use postgres_ffi::xlog_utils::TimestampTz;
 use std::collections::HashMap;
 use std::io;
@@ -355,7 +356,7 @@ pub enum BeMessage<'a> {
     ParseComplete,
     ReadyForQuery,
     RowDescription(&'a [RowDescriptor<'a>]),
-    XLogData(XLogDataBody<'a>),
+    XLogData(XLogDataBody<&'a [u8]>),
     NoticeResponse(String),
 }
 
@@ -400,12 +401,12 @@ impl RowDescriptor<'_> {
     }
 }
 
-#[derive(Debug)]
-pub struct XLogDataBody<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct XLogDataBody<D> {
     pub wal_start: u64,
     pub wal_end: u64,
     pub timestamp: i64,
-    pub data: &'a [u8],
+    pub data: D,
 }
 
 pub static HELLO_WORLD_ROW: BeMessage = BeMessage::DataRow(&[Some(b"hello world")]);

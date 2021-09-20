@@ -18,6 +18,7 @@ pub mod repository;
 pub mod restore_local_repo;
 pub mod tenant_mgr;
 pub mod waldecoder;
+// pub mod walpush_receiver;
 pub mod walreceiver;
 pub mod walredo;
 

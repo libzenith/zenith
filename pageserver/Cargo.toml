@@ -5,6 +5,7 @@ authors = ["Stas Kelvich <stas@zenith.tech>"]
 edition = "2018"
 
 [dependencies]
+bincode = "1.3"
 bookfile = "^0.3"
 chrono = "0.4.19"
 rand = "0.8.3"
@@ -18,9 +19,9 @@ log = "0.4.14"
 clap = "2.33.0"
 daemonize = "0.4.1"
 tokio = { version = "1.11", features = ["process", "macros", "fs"] }
-postgres-types = { git = "https://github.com/zenithdb/rust-postgres.git", rev="9eb0dbfbeb6a6c1b79099b9f7ae4a8c021877858" }
-postgres-protocol = { git = "https://github.com/zenithdb/rust-postgres.git", rev="9eb0dbfbeb6a6c1b79099b9f7ae4a8c021877858" }
-postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="9eb0dbfbeb6a6c1b79099b9f7ae4a8c021877858" }
+postgres-types = { git = "https://github.com/zenithdb/rust-postgres.git", rev="f744467a9904ef8258605c20ac0f318efb7659db" }
+postgres-protocol = { git = "https://github.com/zenithdb/rust-postgres.git", rev="f744467a9904ef8258605c20ac0f318efb7659db" }
+postgres = { git = "https://github.com/zenithdb/rust-postgres.git", rev="f744467a9904ef8258605c20ac0f318efb7659db" }
 routerify = "2"
 anyhow = "1.0"
 crc32c = "0.6.0"

@@ -37,7 +37,7 @@ use crate::branches;
 use crate::relish::*;
 use crate::repository::Timeline;
 use crate::tenant_mgr;
-use crate::walreceiver;
+use crate::walreceiver::{PushWalReceiver, StandardWalReceiver};
 use crate::PageServerConf;
 
 // Wrapped in libpq CopyData
@@ -535,6 +535,29 @@ impl postgres_backend::Handler for PageServerHandler {
             // Check that the timeline exists
             self.handle_basebackup_request(pgb, timelineid, lsn, tenantid)?;
             pgb.write_message_noflush(&BeMessage::CommandComplete(b"SELECT 1"))?;
+        } else if query_string.starts_with("START_PUSH_REPLICATION ") {
+            // START_PUSH_REPLICATION <zenith tenant id> <zenith timelineid> <end of WAL LSN>
+            // TODO lazy static
+            let re = Regex::new(
+                r"^START_PUSH_REPLICATION ([[:xdigit:]]+) ([[:xdigit:]]+) ([[:xdigit:]]+)$",
+            )
+            .unwrap();
+
+            let caps = re.captures(query_string).ok_or_else(|| {
+                anyhow!("invalid START_PUSH_REPLICATION query '{}'", query_string)
+            })?;
+
+            let tenantid = ZTenantId::from_str(caps.get(1).unwrap().as_str())?;
+            let timelineid = ZTimelineId::from_str(caps.get(2).unwrap().as_str())?;
+            let end_of_wal = Lsn::from_str(caps.get(3).unwrap().as_str())?;
+
+            self.check_permission(Some(tenantid))?;
+
+            // Check that the timeline exists
+            tenant_mgr::get_timeline_for_tenant(tenantid, timelineid)?;
+
+            PushWalReceiver::run(pgb, self.conf, timelineid, tenantid, end_of_wal)?;
+            pgb.write_message_noflush(&BeMessage::CommandComplete(b"SELECT 1"))?;
         } else if query_string.starts_with("callmemaybe ") {
             // callmemaybe <zenith tenantid as hex string> <zenith timelineid as hex string> <connstr>
             // TODO lazy static
@@ -552,7 +575,7 @@ impl postgres_backend::Handler for PageServerHandler {
             // Check that the timeline exists
             tenant_mgr::get_timeline_for_tenant(tenantid, timelineid)?;
 
-            walreceiver::launch_wal_receiver(self.conf, timelineid, &connstr, tenantid.to_owned());
+            StandardWalReceiver::launch(self.conf, connstr, timelineid, tenantid.to_owned());
 
             pgb.write_message_noflush(&BeMessage::CommandComplete(b"SELECT 1"))?;
         } else if query_string.starts_with("branch_create ") {
