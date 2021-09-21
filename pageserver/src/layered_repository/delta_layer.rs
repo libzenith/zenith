@@ -482,7 +482,8 @@ impl DeltaLayer {
         Summary::ser_into(&summary, &mut chapter)?;
         let book = chapter.close()?;
 
-        book.close()?;
+        let file = book.close()?;
+        file.sync_all()?;
 
         trace!("saved {}", &path.display());
 

@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::{BTreeSet, HashSet};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::ops::Bound::Included;
 use std::path::{Path, PathBuf};
@@ -132,7 +132,7 @@ impl Repository for LayeredRepository {
             ancestor_timeline: None,
             ancestor_lsn: Lsn(0),
         };
-        Self::save_metadata(self.conf, timelineid, self.tenantid, &metadata)?;
+        Self::save_metadata(self.conf, timelineid, self.tenantid, &metadata, true)?;
 
         let timeline = LayeredTimeline::new(
             self.conf,
@@ -177,7 +177,7 @@ impl Repository for LayeredRepository {
             ancestor_lsn: start_lsn,
         };
         std::fs::create_dir_all(self.conf.timeline_path(&dst, &self.tenantid))?;
-        Self::save_metadata(self.conf, dst, self.tenantid, &metadata)?;
+        Self::save_metadata(self.conf, dst, self.tenantid, &metadata, true)?;
 
         info!("branched timeline {} from {} at {}", dst, src, start_lsn);
 
@@ -355,13 +355,34 @@ impl LayeredRepository {
         timelineid: ZTimelineId,
         tenantid: ZTenantId,
         data: &TimelineMetadata,
+        first_save: bool,
     ) -> Result<PathBuf> {
-        let path = conf.timeline_path(&timelineid, &tenantid).join("metadata");
-        let mut file = File::create(&path)?;
+        let timeline_path = conf.timeline_path(&timelineid, &tenantid);
+        let path = timeline_path.join("metadata");
+        // use OpenOptions to ensure file presence is consistent with first_save
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(!first_save)
+            .create_new(first_save)
+            .open(&path)?;
 
         info!("saving metadata {}", path.display());
 
-        file.write_all(&TimelineMetadata::ser(data)?)?;
+        let metadata_bytes = TimelineMetadata::ser(data)?;
+        // Taken from PG_CONTROL_MAX_SAFE_SIZE
+        const MAX_SAFE_SIZE: usize = 512;
+        assert!(metadata_bytes.len() <= MAX_SAFE_SIZE);
+
+        if file.write(&metadata_bytes)? != metadata_bytes.len() {
+            bail!("Could not write all the metadata bytes in a single call");
+        }
+        file.sync_all()?;
+
+        // fsync the parent directory to ensure the directory entry is durable
+        if first_save {
+            let timeline_dir = File::open(&timeline_path)?;
+            timeline_dir.sync_all()?;
+        }
 
         Ok(path)
     }
@@ -1267,6 +1288,11 @@ impl LayeredTimeline {
             last_record_lsn
         );
 
+        let timeline_dir = {
+            let path = self.conf.timeline_path(&self.timelineid, &self.tenantid);
+            File::open(&path)?
+        };
+
         // Take the in-memory layer with the oldest WAL record. If it's older
         // than the threshold, write it out to disk as a new image and delta file.
         // Repeat until all remaining in-memory layers are within the threshold.
@@ -1277,6 +1303,8 @@ impl LayeredTimeline {
         // check, though. We should also aim at flushing layers that consume
         // a lot of memory and/or aren't receiving much updates anymore.
         let mut disk_consistent_lsn = last_record_lsn;
+
+        let mut created_historics = false;
 
         while let Some((oldest_layer, oldest_generation)) = layers.peek_oldest_open() {
             let oldest_pending_lsn = oldest_layer.get_oldest_pending_lsn();
@@ -1328,6 +1356,11 @@ impl LayeredTimeline {
             drop(layers);
             let new_historics = frozen.write_to_disk(self)?;
             layers = self.layers.lock().unwrap();
+
+            if !new_historics.is_empty() {
+                created_historics = true;
+            }
+
             if let Some(relish_uploader) = &self.relish_uploader {
                 for label_path in new_historics.iter().filter_map(|layer| layer.path()) {
                     relish_uploader.schedule_upload(self.timelineid, label_path);
@@ -1359,6 +1392,14 @@ impl LayeredTimeline {
             layer.unload()?;
         }
 
+        drop(layers);
+
+        if created_historics {
+            // We must fsync the timeline dir to ensure the directory entries for
+            // new layer files are durable
+            timeline_dir.sync_all()?;
+        }
+
         // Save the metadata, with updated 'disk_consistent_lsn', to a
         // file in the timeline dir. After crash, we will restart WAL
         // streaming and processing from that point.
@@ -1383,8 +1424,13 @@ impl LayeredTimeline {
             ancestor_timeline: ancestor_timelineid,
             ancestor_lsn: self.ancestor_lsn,
         };
-        let metadata_path =
-            LayeredRepository::save_metadata(self.conf, self.timelineid, self.tenantid, &metadata)?;
+        let metadata_path = LayeredRepository::save_metadata(
+            self.conf,
+            self.timelineid,
+            self.tenantid,
+            &metadata,
+            false,
+        )?;
         if let Some(relish_uploader) = &self.relish_uploader {
             relish_uploader.schedule_upload(self.timelineid, metadata_path);
         }
