@@ -33,7 +33,7 @@ use std::{fs, thread};
 
 use crate::layered_repository::inmemory_layer::FreezeLayers;
 use crate::relish::*;
-use crate::relish_storage::synced_storage::LayerUpload;
+use crate::relish_storage::synced_storage::{RelishStorageWithBackgroundSync, TimelineUpload};
 use crate::repository::{GcResult, Repository, Timeline, WALRecord};
 use crate::restore_local_repo::import_timeline_wal;
 use crate::walredo::WalRedoManager;
@@ -144,6 +144,7 @@ impl Repository for LayeredRepository {
             self.tenantid,
             Arc::clone(&self.walredo_mgr),
             0,
+            None,
         )?;
 
         let timeline_rc = Arc::new(timeline);
@@ -227,6 +228,8 @@ impl LayeredRepository {
                     None
                 };
 
+                let relish_storage =
+                    &crate::relish_storage::synced_storage::RELISH_STORAGE_WITH_BACKGROUND_SYNC;
                 let mut timeline = LayeredTimeline::new(
                     self.conf,
                     metadata,
@@ -234,11 +237,15 @@ impl LayeredRepository {
                     timelineid,
                     self.tenantid,
                     Arc::clone(&self.walredo_mgr),
-                    0, // init with 0 and update after layers are loaded
+                    0, // init with 0 and update after layers are loaded,
+                    Some(Arc::clone(relish_storage)),
                 )?;
 
                 // List the layers on disk, and load them into the layer map
-                timeline.load_layer_map()?;
+                let latest_timeline_on_disk = timeline.load_layer_map()?;
+                if let Some(timeline) = latest_timeline_on_disk {
+                    relish_storage.schedule_timeline_upload(timeline);
+                }
 
                 // needs to be after load_layer_map
                 timeline.init_current_logical_size()?;
@@ -594,6 +601,9 @@ pub struct LayeredTimeline {
     // TODO: it is possible to combine these two fields into single one using custom metric which uses SeqCst
     // ordering for its operations, but involves private modules, and macro trickery
     current_logical_size_gauge: IntGauge,
+
+    // TODO kb docs
+    relish_storage: Option<Arc<RelishStorageWithBackgroundSync>>,
 }
 
 /// Public interface functions
@@ -975,6 +985,7 @@ impl LayeredTimeline {
         tenantid: ZTenantId,
         walredo_mgr: Arc<dyn WalRedoManager + Send + Sync>,
         current_logical_size: usize,
+        relish_storage: Option<Arc<RelishStorageWithBackgroundSync>>,
     ) -> Result<LayeredTimeline> {
         let current_logical_size_gauge = LOGICAL_TIMELINE_SIZE
             .get_metric_with_label_values(&[&tenantid.to_string(), &timelineid.to_string()])
@@ -998,25 +1009,35 @@ impl LayeredTimeline {
             ancestor_lsn: metadata.ancestor_lsn,
             current_logical_size: AtomicUsize::new(current_logical_size),
             current_logical_size_gauge,
+            relish_storage,
         };
         Ok(timeline)
     }
 
     ///
-    /// Scan the timeline directory to populate the layer map
+    /// Scan the timeline directory to populate the layer map.
     ///
-    fn load_layer_map(&self) -> anyhow::Result<()> {
+    /// If any timeline data found in the directory,
+    /// its metadata returned for external storage upload.
+    ///
+    fn load_layer_map(&self) -> anyhow::Result<Option<TimelineUpload>> {
         info!(
             "loading layer map for timeline {} into memory",
             self.timelineid
         );
         let mut layers = self.layers.lock().unwrap();
-        let (imgfilenames, mut deltafilenames) =
-            filename::list_files(self.conf, self.timelineid, self.tenantid)?;
+        let mut timeline_files =
+            filename::list_timeline_files(self.conf, self.timelineid, self.tenantid)?;
+
+        let mut disk_relishes = Vec::new();
+        let mut disk_consistent_lsn = None;
 
         // First create ImageLayer structs for each image file.
-        for filename in imgfilenames.iter() {
-            let layer = ImageLayer::new(self.conf, self.timelineid, self.tenantid, filename);
+        for (filename, layer_path) in timeline_files.image_layers {
+            disk_relishes.push(layer_path);
+            disk_consistent_lsn = disk_consistent_lsn.max(Some(filename.lsn));
+
+            let layer = ImageLayer::new(self.conf, self.timelineid, self.tenantid, &filename);
 
             info!(
                 "found layer {} {} on timeline {}",
@@ -1030,9 +1051,11 @@ impl LayeredTimeline {
         // Then for the Delta files. The delta files are created in order starting
         // from the oldest file, because each DeltaLayer needs a reference to its
         // predecessor.
-        deltafilenames.sort();
+        timeline_files.delta_layers.sort();
+        for (filename, layer_path) in timeline_files.delta_layers {
+            disk_relishes.push(layer_path);
+            disk_consistent_lsn = disk_consistent_lsn.max(Some(filename.end_lsn));
 
-        for filename in deltafilenames.iter() {
             let predecessor = layers.get(&filename.seg, filename.start_lsn);
 
             let predecessor_str: String = if let Some(prec) = &predecessor {
@@ -1045,7 +1068,7 @@ impl LayeredTimeline {
                 self.conf,
                 self.timelineid,
                 self.tenantid,
-                filename,
+                &filename,
                 predecessor,
             );
 
@@ -1058,7 +1081,14 @@ impl LayeredTimeline {
             layers.insert_historic(Arc::new(layer));
         }
 
-        Ok(())
+        Ok(timeline_files.metadata.zip(disk_consistent_lsn).map(
+            |(metadata_path, disk_consistent_lsn)| TimelineUpload {
+                timeline_id: self.timelineid,
+                disk_consistent_lsn,
+                metadata_path,
+                disk_relishes,
+            },
+        ))
     }
 
     ///
@@ -1429,14 +1459,14 @@ impl LayeredTimeline {
         };
         let metadata_path =
             LayeredRepository::save_metadata(self.conf, self.timelineid, self.tenantid, &metadata)?;
-        crate::relish_storage::synced_storage::RELISH_STORAGE_SYNC_QUEUE.upload_layer(
-            LayerUpload {
+        if let Some(relish_storage) = &self.relish_storage {
+            relish_storage.schedule_timeline_upload(TimelineUpload {
                 timeline_id: self.timelineid,
                 disk_consistent_lsn,
                 metadata_path,
                 disk_relishes: relishes_to_upload,
-            },
-        );
+            });
+        }
 
         // Also update the in-memory copy
         self.disk_consistent_lsn.store(disk_consistent_lsn);

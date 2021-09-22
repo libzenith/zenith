@@ -269,34 +269,52 @@ impl fmt::Display for ImageFileName {
     }
 }
 
+pub struct TimelineFiles {
+    pub image_layers: Vec<(ImageFileName, PathBuf)>,
+    pub delta_layers: Vec<(DeltaFileName, PathBuf)>,
+    pub metadata: Option<PathBuf>,
+}
+
 /// Scan timeline directory and create ImageFileName and DeltaFilename
 /// structs representing all files on disk
-///
-/// TODO: returning an Iterator would be more idiomatic
-pub fn list_files(
+pub fn list_timeline_files(
     conf: &'static PageServerConf,
     timelineid: ZTimelineId,
     tenantid: ZTenantId,
-) -> Result<(Vec<ImageFileName>, Vec<DeltaFileName>)> {
+) -> Result<TimelineFiles> {
     let path = conf.timeline_path(&timelineid, &tenantid);
 
-    let mut deltafiles: Vec<DeltaFileName> = Vec::new();
-    let mut imgfiles: Vec<ImageFileName> = Vec::new();
+    let mut image_layers = Vec::new();
+    let mut delta_layers = Vec::new();
+    let mut metadata = None::<PathBuf>;
     for direntry in fs::read_dir(path)? {
-        let fname = direntry?.file_name();
+        let entry = direntry?;
+        let fname = entry.file_name();
         let fname = fname.to_str().unwrap();
 
         if let Some(deltafilename) = DeltaFileName::from_str(fname) {
-            deltafiles.push(deltafilename);
+            delta_layers.push((deltafilename, entry.path()));
         } else if let Some(imgfilename) = ImageFileName::from_str(fname) {
-            imgfiles.push(imgfilename);
-        } else if fname == "wal" || fname == "metadata" || fname == "ancestor" {
+            image_layers.push((imgfilename, entry.path()));
+        } else if fname == "metadata" {
+            if let Some(old_path) = metadata.replace(entry.path()) {
+                anyhow::bail!(
+                    "Found two metadata files for a single layer. First: '{}', second: '{}'",
+                    old_path.display(),
+                    entry.path().display()
+                )
+            }
+        } else if fname == "wal" || fname == "ancestor" {
             // ignore these
         } else {
             warn!("unrecognized filename in timeline dir: {}", fname);
         }
     }
-    Ok((imgfiles, deltafiles))
+    Ok(TimelineFiles {
+        image_layers,
+        delta_layers,
+        metadata,
+    })
 }
 
 /// Helper enum to hold a PageServerConf, or a path

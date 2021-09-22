@@ -18,12 +18,12 @@ use super::{local_fs::LocalFs, rust_s3::RustS3};
 enum SyncTask {
     // TODO kb also have tenant_id here?
     UrgentDownload(ZTimelineId),
-    Upload(LayerUpload),
+    Upload(TimelineUpload),
     Download(ZTimelineId),
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LayerUpload {
+pub struct TimelineUpload {
     pub timeline_id: ZTimelineId,
     pub disk_consistent_lsn: Lsn,
     pub metadata_path: PathBuf,
@@ -31,15 +31,15 @@ pub struct LayerUpload {
 }
 
 lazy_static::lazy_static! {
-    pub static ref RELISH_STORAGE_SYNC_QUEUE: Arc<RelishStorageSyncQueue> = Arc::new(RelishStorageSyncQueue::new());
+    pub static ref RELISH_STORAGE_WITH_BACKGROUND_SYNC: Arc<RelishStorageWithBackgroundSync> = Arc::new(RelishStorageWithBackgroundSync::new());
 }
 
-pub struct RelishStorageSyncQueue {
+pub struct RelishStorageWithBackgroundSync {
     enabled: AtomicBool,
     queue: Mutex<BinaryHeap<SyncTask>>,
 }
 
-impl RelishStorageSyncQueue {
+impl RelishStorageWithBackgroundSync {
     pub fn new() -> Self {
         Self {
             enabled: AtomicBool::new(true),
@@ -47,6 +47,18 @@ impl RelishStorageSyncQueue {
         }
     }
 
+    pub fn schedule_timeline_upload(&self, timeline_upload: TimelineUpload) {
+        if self.is_enabled() {
+            self.queue
+                .lock()
+                .unwrap()
+                .push(SyncTask::Upload(timeline_upload));
+        }
+    }
+
+    pub fn update_local_layer_info(&self, local_layers: ()) {}
+
+    // TODO kb odd and wrong. Use either a disabled enum variant or Option instead?
     fn disable(&self) {
         self.enabled
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -55,15 +67,6 @@ impl RelishStorageSyncQueue {
 
     fn is_enabled(&self) -> bool {
         self.enabled.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub fn upload_layer(&self, layer_upload: LayerUpload) {
-        if self.is_enabled() {
-            self.queue
-                .lock()
-                .unwrap()
-                .push(SyncTask::Upload(layer_upload));
-        }
     }
 
     fn next(&self) -> Option<SyncTask> {
@@ -86,7 +89,7 @@ pub fn create_storage_sync_thread(
     //     Some(RelishStorageConfig::LocalFs(root)) => {
     //         let relish_storage = LocalFs::new(root.clone())?;
     //         Ok(Some(run_thread(
-    //             Arc::clone(&RELISH_STORAGE_SYNC_QUEUE),
+    //             Arc::clone(&RELISH_STORAGE_WITH_BACKGROUND_SYNC),
     //             relish_storage,
     //             &config.workdir,
     //         )?))
@@ -94,26 +97,26 @@ pub fn create_storage_sync_thread(
     //     Some(RelishStorageConfig::AwsS3(s3_config)) => {
     //         let relish_storage = RustS3::new(s3_config)?;
     //         Ok(Some(run_thread(
-    //             Arc::clone(&RELISH_STORAGE_SYNC_QUEUE),
+    //             Arc::clone(&RELISH_STORAGE_WITH_BACKGROUND_SYNC),
     //             relish_storage,
     //             &config.workdir,
     //         )?))
     //     }
     //     None => {
-    //         RELISH_STORAGE_SYNC_QUEUE.disable();
+    //         RELISH_STORAGE_WITH_BACKGROUND_SYNC.disable();
     //         Ok(None)
     //     }
     // }
     let relish_storage = LocalFs::new(PathBuf::from("/Users/someonetoignore/Downloads/tmp_dir"))?;
     Ok(Some(run_thread(
-        Arc::clone(&RELISH_STORAGE_SYNC_QUEUE),
+        Arc::clone(&RELISH_STORAGE_WITH_BACKGROUND_SYNC),
         relish_storage,
         &config.workdir,
     )?))
 }
 
 fn run_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
-    sync_tasks_queue: Arc<RelishStorageSyncQueue>,
+    sync_tasks_queue: Arc<RelishStorageWithBackgroundSync>,
     relish_storage: S,
     page_server_workdir: &'static Path,
 ) -> std::io::Result<thread::JoinHandle<()>> {
@@ -150,16 +153,16 @@ fn run_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
 }
 
 async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
-    sync_tasks_queue: &RelishStorageSyncQueue,
+    sync_tasks_queue: &RelishStorageWithBackgroundSync,
     relish_storage: &S,
     page_server_workdir: &Path,
-    layer_upload: LayerUpload,
+    layer_upload: TimelineUpload,
 ) {
     log::debug!("Uploading layers for timeline {}", layer_upload.timeline_id);
     let mut failed_relish_uploads = Vec::new();
     let mut relish_uploads = FuturesUnordered::new();
 
-    // TODO kb put into config
+    // TODO kb put into config, replace chunks with semaphore
     let concurrent_upload_limit = 10;
 
     for chunk in layer_upload.disk_relishes.chunks(concurrent_upload_limit) {
@@ -205,7 +208,7 @@ async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
                     layer_upload.metadata_path.display(),
                     e
                 );
-                sync_tasks_queue.upload_layer(LayerUpload {
+                sync_tasks_queue.schedule_timeline_upload(TimelineUpload {
                     disk_relishes: Vec::new(),
                     ..layer_upload
                 });
@@ -216,7 +219,7 @@ async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
             "Failed to upload {} files, rescheduling the job",
             failed_relish_uploads.len()
         );
-        sync_tasks_queue.upload_layer(LayerUpload {
+        sync_tasks_queue.schedule_timeline_upload(TimelineUpload {
             disk_relishes: failed_relish_uploads,
             ..layer_upload
         });
