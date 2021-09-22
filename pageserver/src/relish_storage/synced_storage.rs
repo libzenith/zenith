@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::Context;
 use futures::stream::{FuturesUnordered, StreamExt};
+use tokio::sync::Semaphore;
 use zenith_utils::{lsn::Lsn, zid::ZTimelineId};
 
 use crate::{relish_storage::RelishStorage, PageServerConf, RelishStorageConfig};
@@ -55,8 +56,6 @@ impl RelishStorageWithBackgroundSync {
                 .push(SyncTask::Upload(timeline_upload));
         }
     }
-
-    pub fn update_local_layer_info(&self, local_layers: ()) {}
 
     // TODO kb odd and wrong. Use either a disabled enum variant or Option instead?
     fn disable(&self) {
@@ -162,31 +161,35 @@ async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
     let mut failed_relish_uploads = Vec::new();
     let mut relish_uploads = FuturesUnordered::new();
 
-    // TODO kb put into config, replace chunks with semaphore
-    let concurrent_upload_limit = 10;
+    // TODO kb put into config
+    let concurrent_upload_limit = Arc::new(Semaphore::new(10));
+    for relish_local_path in layer_upload.disk_relishes {
+        let upload_limit = Arc::clone(&concurrent_upload_limit);
+        relish_uploads.push(async move {
+            let permit = upload_limit
+                .acquire()
+                .await
+                .expect("Semaphore is not closed yet");
+            let upload_result =
+                upload_file(relish_storage, page_server_workdir, &relish_local_path).await;
+            drop(permit);
+            (relish_local_path, upload_result)
+        });
+    }
 
-    for chunk in layer_upload.disk_relishes.chunks(concurrent_upload_limit) {
-        for relish_local_path in chunk {
-            relish_uploads.push(async move {
-                let upload_result =
-                    upload_file(relish_storage, page_server_workdir, relish_local_path).await;
-                (relish_local_path, upload_result)
-            });
-        }
-        while let Some((relish_local_path, relish_upload_result)) = relish_uploads.next().await {
-            match relish_upload_result {
-                Ok(()) => log::trace!(
-                    "Successfully uploaded relish '{}'",
-                    relish_local_path.display()
-                ),
-                Err(e) => {
-                    log::error!(
-                        "Failed to upload file '{}', reason: {}",
-                        relish_local_path.display(),
-                        e
-                    );
-                    failed_relish_uploads.push(relish_local_path.clone());
-                }
+    while let Some((relish_local_path, relish_upload_result)) = relish_uploads.next().await {
+        match relish_upload_result {
+            Ok(()) => log::trace!(
+                "Successfully uploaded relish '{}'",
+                relish_local_path.display()
+            ),
+            Err(e) => {
+                log::error!(
+                    "Failed to upload file '{}', reason: {}",
+                    relish_local_path.display(),
+                    e
+                );
+                failed_relish_uploads.push(relish_local_path.clone());
             }
         }
     }
