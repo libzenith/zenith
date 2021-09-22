@@ -547,6 +547,9 @@ impl PostgresRedoProcess {
         let stdin = &mut self.stdin;
         let stdout = &mut self.stdout;
 
+        // Buffer the writes to avoid a lot of small syscalls.
+        let mut buffered_stdin = tokio::io::BufWriter::new(&mut *stdin);
+
         // We do three things simultaneously: send the old base image and WAL records to
         // the child process's stdin, read the result from child's stdout, and forward any logging
         // information that the child writes to its stderr to the page server's log.
@@ -559,13 +562,13 @@ impl PostgresRedoProcess {
             // version is not needed.)
             timeout(
                 TIMEOUT,
-                stdin.write_all(&build_begin_redo_for_block_msg(tag)),
+                buffered_stdin.write_all(&build_begin_redo_for_block_msg(tag)),
             )
             .await??;
             if base_img.is_some() {
                 timeout(
                     TIMEOUT,
-                    stdin.write_all(&build_push_page_msg(tag, base_img.unwrap())),
+                    buffered_stdin.write_all(&build_push_page_msg(tag, base_img.unwrap())),
                 )
                 .await??;
             }
@@ -576,7 +579,7 @@ impl PostgresRedoProcess {
 
                 WAL_REDO_RECORD_COUNTER.inc();
 
-                stdin
+                buffered_stdin
                     .write_all(&build_apply_record_msg(r.lsn, r.rec))
                     .await?;
 
@@ -587,8 +590,8 @@ impl PostgresRedoProcess {
             //       records.len(), lsn >> 32, lsn & 0xffff_ffff);
 
             // Send GetPage command to get the result back
-            timeout(TIMEOUT, stdin.write_all(&build_get_page_msg(tag))).await??;
-            timeout(TIMEOUT, stdin.flush()).await??;
+            timeout(TIMEOUT, buffered_stdin.write_all(&build_get_page_msg(tag))).await??;
+            timeout(TIMEOUT, buffered_stdin.flush()).await??;
             //debug!("sent GetPage for {}", tag.blknum);
             Ok::<(), Error>(())
         };
