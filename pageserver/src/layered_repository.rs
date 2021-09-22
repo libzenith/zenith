@@ -956,6 +956,10 @@ impl Timeline for LayeredTimeline {
 
         Ok(total_blocks * BLCKSZ as usize)
     }
+
+    fn get_disk_consistent_lsn(&self) -> Lsn {
+        self.disk_consistent_lsn.load()
+    }
 }
 
 impl LayeredTimeline {

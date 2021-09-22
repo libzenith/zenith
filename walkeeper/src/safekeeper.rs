@@ -188,6 +188,8 @@ pub struct AppendResponse {
     // We report back our awareness about which WAL is committed, as this is
     // a criterion for walproposer --sync mode exit
     pub commit_lsn: Lsn,
+    // Min disk consistent lsn of pageservers (portion of WAL applied and written to the disk by pageservers)
+    pub disk_consistent_lsn: Lsn,
     pub hs_feedback: HotStandbyFeedback,
 }
 
@@ -411,6 +413,7 @@ where
                 epoch: self.s.acceptor_state.epoch,
                 commit_lsn: Lsn(0),
                 flush_lsn: Lsn(0),
+                disk_consistent_lsn: Lsn(0),
                 hs_feedback: HotStandbyFeedback::empty(),
             };
             return Ok(AcceptorProposerMessage::AppendResponse(resp));
@@ -516,6 +519,7 @@ where
             epoch: self.s.acceptor_state.epoch,
             flush_lsn: self.flush_lsn,
             commit_lsn: self.s.commit_lsn,
+            disk_consistent_lsn: Lsn(0),
             // will be filled by caller code to avoid bothering safekeeper
             hs_feedback: HotStandbyFeedback::empty(),
         };

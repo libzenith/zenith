@@ -322,7 +322,7 @@ impl PostgresNode {
                  shared_buffers = 1MB\n\
                  fsync = off\n\
                  max_connections = 100\n\
-                 wal_sender_timeout = 0\n\
+                 wal_sender_timeout = 10s\n\
                  wal_level = replica\n\
                  listen_addresses = '{address}'\n\
                  port = {port}\n",

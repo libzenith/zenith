@@ -32,8 +32,8 @@ pub mod defaults {
     // FIXME: This current value is very low. I would imagine something like 1 GB or 10 GB
     // would be more appropriate. But a low value forces the code to be exercised more,
     // which is good for now to trigger bugs.
-    pub const DEFAULT_CHECKPOINT_DISTANCE: u64 = 64 * 1024 * 1024;
-    pub const DEFAULT_CHECKPOINT_PERIOD: Duration = Duration::from_secs(100);
+    pub const DEFAULT_CHECKPOINT_DISTANCE: u64 = 256 * 1024 * 1024;
+    pub const DEFAULT_CHECKPOINT_PERIOD: Duration = Duration::from_secs(1);
 
     pub const DEFAULT_GC_HORIZON: u64 = 64 * 1024 * 1024;
     pub const DEFAULT_GC_PERIOD: Duration = Duration::from_secs(100);

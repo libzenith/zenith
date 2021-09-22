@@ -357,6 +357,7 @@ pub enum BeMessage<'a> {
     RowDescription(&'a [RowDescriptor<'a>]),
     XLogData(XLogDataBody<'a>),
     NoticeResponse(String),
+    KeepAlive(WalSndKeepAlive),
 }
 
 // One row desciption in RowDescription packet.
@@ -406,6 +407,13 @@ pub struct XLogDataBody<'a> {
     pub wal_end: u64,
     pub timestamp: i64,
     pub data: &'a [u8],
+}
+
+#[derive(Debug)]
+pub struct WalSndKeepAlive {
+    pub sent_ptr: u64,
+    pub timestamp: i64,
+    pub request_reply: bool,
 }
 
 pub static HELLO_WORLD_ROW: BeMessage = BeMessage::DataRow(&[Some(b"hello world")]);
@@ -716,6 +724,18 @@ impl<'a> BeMessage<'a> {
                     buf.put_u64(body.wal_end);
                     buf.put_i64(body.timestamp);
                     buf.put_slice(body.data);
+                    Ok::<_, io::Error>(())
+                })
+                .unwrap();
+            }
+
+            BeMessage::KeepAlive(req) => {
+                buf.put_u8(b'd');
+                write_body(buf, |buf| {
+                    buf.put_u8(b'k');
+                    buf.put_u64(req.sent_ptr);
+                    buf.put_i64(req.timestamp);
+                    buf.put_u8(if req.request_reply { 1u8 } else { 0u8 });
                     Ok::<_, io::Error>(())
                 })
                 .unwrap();

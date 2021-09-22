@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 use zenith_utils::bin_ser::LeSer;
 use zenith_utils::lsn::Lsn;
-
 use zenith_utils::zid::{ZTenantId, ZTimelineId};
 
 use crate::replication::{HotStandbyFeedback, END_REPLICATION_MARKER};
@@ -25,6 +25,35 @@ use crate::WalAcceptorConf;
 use postgres_ffi::xlog_utils::{XLogFileName, XLOG_BLCKSZ};
 
 const CONTROL_FILE_NAME: &str = "safekeeper.control";
+const POLL_STATE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Replica status: host standby feedback + disk consistent lsn
+#[derive(Debug, Clone, Copy)]
+pub struct ReplicaState {
+    /// combined disk_consistent_lsn of pageservers
+    pub disk_consistent_lsn: Lsn,
+    /// combined hot standby feedback from all replicas
+    pub hs_feedback: HotStandbyFeedback,
+}
+
+impl Default for ReplicaState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReplicaState {
+    pub fn new() -> ReplicaState {
+        ReplicaState {
+            disk_consistent_lsn: Lsn(u64::MAX),
+            hs_feedback: HotStandbyFeedback {
+                ts: 0,
+                xmin: u64::MAX,
+                catalog_xmin: u64::MAX,
+            },
+        }
+    }
+}
 
 /// Shared state associated with database instance (tenant)
 struct SharedState {
@@ -33,8 +62,8 @@ struct SharedState {
     /// For receiving-sending wal cooperation
     /// quorum commit LSN we've notified walsenders about
     commit_lsn: Lsn,
-    /// combined hot standby feedback from all replicas
-    hs_feedback: HotStandbyFeedback,
+    /// State of replicas
+    replicas: Vec<Option<ReplicaState>>,
 }
 
 // A named boolean.
@@ -45,6 +74,32 @@ pub enum CreateControlFile {
 }
 
 impl SharedState {
+    /// Get combined stateof all alive replicas
+    pub fn get_replicas_state(&self) -> ReplicaState {
+        let mut acc = ReplicaState::new();
+        for state in self.replicas.iter().flatten() {
+            acc.hs_feedback.ts = max(acc.hs_feedback.ts, state.hs_feedback.ts);
+            acc.hs_feedback.xmin = min(acc.hs_feedback.xmin, state.hs_feedback.xmin);
+            acc.hs_feedback.catalog_xmin =
+                min(acc.hs_feedback.catalog_xmin, state.hs_feedback.catalog_xmin);
+            acc.disk_consistent_lsn = Lsn::min(acc.disk_consistent_lsn, state.disk_consistent_lsn);
+        }
+        acc
+    }
+
+    /// Assign new replica ID. We choose first empty cell in the replicas vector
+    /// or extend the vector if there are not free items.
+    pub fn add_replica(&mut self) -> usize {
+        let len = self.replicas.len();
+        for i in 0..len {
+            if self.replicas[i].is_none() {
+                return i;
+            }
+        }
+        self.replicas.push(None);
+        len
+    }
+
     /// Restore SharedState from control file. Locks the control file along the
     /// way to prevent running more than one instance of safekeeper on the same
     /// data dir.
@@ -74,19 +129,8 @@ impl SharedState {
         Ok(Self {
             commit_lsn: Lsn(0),
             sk: SafeKeeper::new(Lsn(flush_lsn), tli, storage, state),
-            hs_feedback: HotStandbyFeedback {
-                ts: 0,
-                xmin: u64::MAX,
-                catalog_xmin: u64::MAX,
-            },
+            replicas: Vec::new(),
         })
-    }
-
-    /// Accumulate hot standby feedbacks from replicas
-    pub fn add_hs_feedback(&mut self, feedback: HotStandbyFeedback) {
-        self.hs_feedback.xmin = min(self.hs_feedback.xmin, feedback.xmin);
-        self.hs_feedback.catalog_xmin = min(self.hs_feedback.catalog_xmin, feedback.catalog_xmin);
-        self.hs_feedback.ts = max(self.hs_feedback.ts, feedback.ts);
     }
 
     /// Fetch and lock control file (prevent running more than one instance of safekeeper)
@@ -178,20 +222,27 @@ impl Timeline {
         }
     }
 
-    /// Wait for an LSN to be committed.
+    /// Timed wait for an LSN to be committed.
     ///
     /// Returns the last committed LSN, which will be at least
-    /// as high as the LSN waited for.
+    /// as high as the LSN waited for, or None if timeout expired.
     ///
-    pub fn wait_for_lsn(&self, lsn: Lsn) -> Lsn {
+    pub fn wait_for_lsn(&self, lsn: Lsn) -> Option<Lsn> {
         let mut shared_state = self.mutex.lock().unwrap();
         loop {
             let commit_lsn = shared_state.commit_lsn;
             // This must be `>`, not `>=`.
             if commit_lsn > lsn {
-                return commit_lsn;
+                return Some(commit_lsn);
             }
-            shared_state = self.cond.wait(shared_state).unwrap();
+            let result = self
+                .cond
+                .wait_timeout(shared_state, POLL_STATE_TIMEOUT)
+                .unwrap();
+            if result.1.timed_out() {
+                return None;
+            }
+            shared_state = result.0
         }
     }
 
@@ -219,9 +270,11 @@ impl Timeline {
             // commit_lsn if we are catching up safekeeper.
             commit_lsn = shared_state.sk.commit_lsn;
 
-            // if this is AppendResponse, fill in proper hot standby feedback
+            // if this is AppendResponse, fill in proper hot standby feedback and disk consistent lsn
             if let AcceptorProposerMessage::AppendResponse(ref mut resp) = rmsg {
-                resp.hs_feedback = shared_state.hs_feedback.clone();
+                let state = shared_state.get_replicas_state();
+                resp.hs_feedback = state.hs_feedback;
+                resp.disk_consistent_lsn = state.disk_consistent_lsn;
             }
         }
         // Ping wal sender that new data might be available.
@@ -233,15 +286,14 @@ impl Timeline {
         self.mutex.lock().unwrap().sk.s.clone()
     }
 
-    // Accumulate hot standby feedbacks from replicas
-    pub fn add_hs_feedback(&self, feedback: HotStandbyFeedback) {
+    pub fn add_replica(&self) -> usize {
         let mut shared_state = self.mutex.lock().unwrap();
-        shared_state.add_hs_feedback(feedback);
+        shared_state.add_replica()
     }
 
-    pub fn get_hs_feedback(&self) -> HotStandbyFeedback {
-        let shared_state = self.mutex.lock().unwrap();
-        shared_state.hs_feedback.clone()
+    pub fn update_replica_state(&self, id: usize, state: Option<ReplicaState>) {
+        let mut shared_state = self.mutex.lock().unwrap();
+        shared_state.replicas[id] = state;
     }
 
     pub fn get_end_of_wal(&self) -> (Lsn, u32) {
