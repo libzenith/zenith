@@ -4,6 +4,7 @@ import asyncpg
 import os
 import pathlib
 import uuid
+import warnings
 import jwt
 import psycopg2
 import pytest
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 from psycopg2.extensions import connection as PgConnection
 from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar, cast
 from typing_extensions import Literal
+import pytest
 
 import requests
 
@@ -53,11 +55,23 @@ DEFAULT_POSTGRES_DIR = 'tmp_install'
 BASE_PORT = 15000
 WORKER_PORT_NUM = 100
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--skip-interfering-proc-check",
+        dest="skip_interfering_proc_check",
+        action="store_true",
+        help="skip check for interferring processes",
+    )
+
+
 def pytest_configure(config):
     """
     Ensure that no unwanted daemons are running before we start testing.
     Check that we do not owerflow available ports range.
     """
+    if config.getoption("skip_interfering_proc_check"):
+        warnings.warn("interferring process check is skipped")
+        return
     numprocesses = config.getoption('numprocesses')
     if numprocesses is not None and BASE_PORT + numprocesses * WORKER_PORT_NUM > 32768: # do not use ephemeral ports
          raise Exception('Too many workers configured. Cannot distrubute ports for services.')

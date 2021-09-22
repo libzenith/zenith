@@ -1,6 +1,7 @@
 import os
 from contextlib import closing
-from fixtures.zenith_fixtures import PostgresFactory, ZenithPageserver
+from fixtures.zenith_fixtures import PgBin, PostgresFactory, ZenithCli, ZenithPageserver
+from fixtures.benchmark_fixture import ZenithBenchmarker
 
 pytest_plugins = ("fixtures.zenith_fixtures", "fixtures.benchmark_fixture")
 
@@ -26,7 +27,14 @@ def get_timeline_size(repo_dir: str, tenantid: str, timelineid: str):
 # 2. Time to run 5000 pgbench transactions
 # 3. Disk space used
 #
-def test_pgbench(postgres: PostgresFactory, pageserver: ZenithPageserver, pg_bin, zenith_cli, zenbenchmark, repo_dir: str):
+def test_pgbench_local(
+    postgres: PostgresFactory,
+    pageserver: ZenithPageserver,
+    pg_bin: PgBin,
+    zenith_cli: ZenithCli,
+    zenbenchmark: ZenithBenchmarker,
+    repo_dir: str,
+):
     # Create a branch for us
     zenith_cli.run(["branch", "test_pgbench_perf", "empty"])
 
@@ -65,4 +73,4 @@ def test_pgbench(postgres: PostgresFactory, pageserver: ZenithPageserver, pg_bin
 
     # Report disk space used by the repository
     timeline_size = get_timeline_size(repo_dir, pageserver.initial_tenant, timeline)
-    zenbenchmark.record('size', timeline_size / (1024*1024), 'MB')
+    zenbenchmark.record('size', timeline_size / (1024*1024), 'MB', higher_is_better=False)
