@@ -272,9 +272,8 @@ impl fmt::Display for ImageFileName {
 
 #[derive(Debug)]
 pub struct TimelineFiles {
-    // TODO kb do we need to pass around PathBuf if we can determine with the *FileName already?
-    pub image_layers: BTreeSet<(ImageFileName, PathBuf)>,
-    pub delta_layers: BTreeSet<(DeltaFileName, PathBuf)>,
+    pub image_layers: BTreeSet<ImageFileName>,
+    pub delta_layers: BTreeSet<DeltaFileName>,
     pub metadata: Option<PathBuf>,
 }
 
@@ -296,9 +295,9 @@ pub fn list_timeline_files(
         let fname = fname.to_str().unwrap();
 
         if let Some(deltafilename) = DeltaFileName::from_str(fname) {
-            delta_layers.insert((deltafilename, entry.path()));
+            delta_layers.insert(deltafilename);
         } else if let Some(imgfilename) = ImageFileName::from_str(fname) {
-            image_layers.insert((imgfilename, entry.path()));
+            image_layers.insert(imgfilename);
         } else if fname == "metadata" {
             if let Some(old_path) = metadata.replace(entry.path()) {
                 anyhow::bail!(

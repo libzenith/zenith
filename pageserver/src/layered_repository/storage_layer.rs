@@ -124,10 +124,6 @@ pub trait Layer: Send + Sync {
     /// Is the segment represented by this layer dropped by PostgreSQL?
     fn is_dropped(&self) -> bool;
 
-    /// Gets the physical location of the layer on disk.
-    /// Some layers, such as in-memory, might not have the location.
-    fn path(&self) -> Option<PathBuf>;
-
     /// Filename used to store this layer on disk. (Even in-memory layers
     /// implement this, to print a handy unique identifier for the layer for
     /// log messages, even though they're never not on disk.)

@@ -180,29 +180,7 @@ impl Layer for DeltaLayer {
     }
 
     fn filename(&self) -> PathBuf {
-        PathBuf::from(
-            DeltaFileName {
-                seg: self.seg,
-                start_lsn: self.start_lsn,
-                end_lsn: self.end_lsn,
-                dropped: self.dropped,
-            }
-            .to_string(),
-        )
-    }
-
-    fn path(&self) -> Option<PathBuf> {
-        Some(Self::path_for(
-            &self.path_or_conf,
-            self.timelineid,
-            self.tenantid,
-            &DeltaFileName {
-                seg: self.seg,
-                start_lsn: self.start_lsn,
-                end_lsn: self.end_lsn,
-                dropped: self.dropped,
-            },
-        ))
+        PathBuf::from(self.layer_name().to_string())
     }
 
     /// Look up given page in the cache.
@@ -315,9 +293,7 @@ impl Layer for DeltaLayer {
 
     fn delete(&self) -> Result<()> {
         // delete underlying file
-        if let Some(path) = self.path() {
-            fs::remove_file(path)?;
-        }
+        fs::remove_file(self.path())?;
         Ok(())
     }
 
@@ -418,9 +394,7 @@ impl DeltaLayer {
         let mut inner = delta_layer.inner.lock().unwrap();
 
         // Write the in-memory btreemaps into a file
-        let path = delta_layer
-            .path()
-            .expect("DeltaLayer is supposed to have a layer path on disk");
+        let path = delta_layer.path();
 
         // Note: This overwrites any existing file. There shouldn't be any.
         // FIXME: throw an error instead?
@@ -494,17 +468,7 @@ impl DeltaLayer {
     }
 
     fn open_book(&self) -> Result<(PathBuf, Book<File>)> {
-        let path = Self::path_for(
-            &self.path_or_conf,
-            self.timelineid,
-            self.tenantid,
-            &DeltaFileName {
-                seg: self.seg,
-                start_lsn: self.start_lsn,
-                end_lsn: self.end_lsn,
-                dropped: self.dropped,
-            },
-        );
+        let path = self.path();
 
         let file = File::open(&path)?;
         let book = Book::new(file)?;
@@ -614,5 +578,23 @@ impl DeltaLayer {
             }),
             predecessor: None,
         })
+    }
+
+    pub fn layer_name(&self) -> DeltaFileName {
+        DeltaFileName {
+            seg: self.seg,
+            start_lsn: self.start_lsn,
+            end_lsn: self.end_lsn,
+            dropped: self.dropped,
+        }
+    }
+
+    fn path(&self) -> PathBuf {
+        Self::path_for(
+            &self.path_or_conf,
+            self.timelineid,
+            self.tenantid,
+            &self.layer_name(),
+        )
     }
 }

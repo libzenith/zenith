@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
+use crate::layered_repository::filename::TimelineFiles;
 use crate::layered_repository::inmemory_layer::FreezeLayers;
 use crate::relish::*;
 use crate::repository::{GcResult, Repository, Timeline, WALRecord};
@@ -1031,15 +1032,11 @@ impl LayeredTimeline {
         let timeline_files =
             filename::list_timeline_files(self.conf, self.timelineid, self.tenantid)?;
 
-        let mut disk_relishes = Vec::new();
         let mut disk_consistent_lsn = None;
-
-        // First create ImageLayer structs for each image file.
-        for (filename, layer_path) in timeline_files.image_layers {
-            disk_relishes.push(layer_path);
+        for filename in &timeline_files.image_layers {
             disk_consistent_lsn = disk_consistent_lsn.max(Some(filename.lsn));
 
-            let layer = ImageLayer::new(self.conf, self.timelineid, self.tenantid, &filename);
+            let layer = ImageLayer::new(self.conf, self.timelineid, self.tenantid, filename);
 
             info!(
                 "found layer {} {} on timeline {}",
@@ -1050,14 +1047,7 @@ impl LayeredTimeline {
             layers.insert_historic(Arc::new(layer));
         }
 
-        // TODO kb ensure, that the order is correct
-        // Then for the Delta files. The delta files are created in order starting
-        // from the oldest file, because each DeltaLayer needs a reference to its
-        // predecessor.
-        // timeline_files.delta_layers.sort();
-
-        for (filename, layer_path) in timeline_files.delta_layers {
-            disk_relishes.push(layer_path);
+        for filename in &timeline_files.delta_layers {
             // TODO kb is this correct?
             disk_consistent_lsn = disk_consistent_lsn.max(Some(filename.end_lsn));
 
@@ -1073,7 +1063,7 @@ impl LayeredTimeline {
                 self.conf,
                 self.timelineid,
                 self.tenantid,
-                &filename,
+                filename,
                 predecessor,
             );
 
@@ -1086,15 +1076,21 @@ impl LayeredTimeline {
             layers.insert_historic(Arc::new(layer));
         }
 
-        Ok(timeline_files.metadata.zip(disk_consistent_lsn).map(
-            |(metadata_path, disk_consistent_lsn)| TimelineUpload {
+        let TimelineFiles {
+            metadata,
+            image_layers,
+            delta_layers,
+        } = timeline_files;
+        Ok(metadata
+            .zip(disk_consistent_lsn)
+            .map(|(metadata_path, disk_consistent_lsn)| TimelineUpload {
                 tenant_id: self.tenantid,
                 timeline_id: self.timelineid,
                 disk_consistent_lsn,
                 metadata_path,
-                disk_relishes,
-            },
-        ))
+                image_layers,
+                delta_layers,
+            }))
     }
 
     ///
@@ -1353,7 +1349,8 @@ impl LayeredTimeline {
         // a lot of memory and/or aren't receiving much updates anymore.
         let mut disk_consistent_lsn = last_record_lsn;
 
-        let mut relishes_to_upload = Vec::new();
+        let mut image_layer_uploads = BTreeSet::new();
+        let mut delta_layer_uploads = BTreeSet::new();
         while let Some((oldest_layer, oldest_generation)) = layers.peek_oldest_open() {
             let oldest_pending_lsn = oldest_layer.get_oldest_pending_lsn();
 
@@ -1410,10 +1407,21 @@ impl LayeredTimeline {
             // Finally, replace the frozen in-memory layer with the new on-disk layers
             layers.remove_historic(frozen.clone());
 
+            let mut historical_layers =
+                Vec::<Arc<dyn Layer>>::with_capacity(new_historics.delta_layers.len() + 1);
+            for delta_layer in new_historics.delta_layers {
+                delta_layer_uploads.insert(delta_layer.layer_name());
+                historical_layers.push(Arc::new(delta_layer));
+            }
+            if let Some(image_layer) = new_historics.image_layer {
+                image_layer_uploads.insert(image_layer.layer_name());
+                historical_layers.push(Arc::new(image_layer));
+            }
+
             // If we created a successor InMemoryLayer, its predecessor is
             // currently the frozen layer. We need to update the predecessor
             // to be the latest on-disk layer.
-            if let Some(last_historic) = new_historics.last() {
+            if let Some(last_historic) = historical_layers.last() {
                 if let Some(new_open) = &maybe_new_open {
                     let maybe_old_predecessor =
                         new_open.update_predecessor(Arc::clone(last_historic));
@@ -1424,11 +1432,8 @@ impl LayeredTimeline {
             }
 
             // Add the historics to the LayerMap
-            for n in new_historics {
-                if let Some(path) = n.path() {
-                    relishes_to_upload.push(path);
-                }
-                layers.insert_historic(n);
+            for h in historical_layers {
+                layers.insert_historic(h);
             }
         }
 
@@ -1471,7 +1476,8 @@ impl LayeredTimeline {
                 timeline_id: self.timelineid,
                 disk_consistent_lsn,
                 metadata_path,
-                disk_relishes: relishes_to_upload,
+                image_layers: image_layer_uploads,
+                delta_layers: delta_layer_uploads,
             });
         }
 

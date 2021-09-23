@@ -114,25 +114,7 @@ pub struct ImageLayerInner {
 
 impl Layer for ImageLayer {
     fn filename(&self) -> PathBuf {
-        PathBuf::from(
-            ImageFileName {
-                seg: self.seg,
-                lsn: self.lsn,
-            }
-            .to_string(),
-        )
-    }
-
-    fn path(&self) -> Option<PathBuf> {
-        Some(Self::path_for(
-            &self.path_or_conf,
-            self.timelineid,
-            self.tenantid,
-            &ImageFileName {
-                seg: self.seg,
-                lsn: self.lsn,
-            },
-        ))
+        PathBuf::from(self.layer_name().to_string())
     }
 
     fn get_timeline_id(&self) -> ZTimelineId {
@@ -222,9 +204,7 @@ impl Layer for ImageLayer {
 
     fn delete(&self) -> Result<()> {
         // delete underlying file
-        if let Some(path) = self.path() {
-            fs::remove_file(path)?;
-        }
+        fs::remove_file(self.path())?;
         Ok(())
     }
 
@@ -300,9 +280,7 @@ impl ImageLayer {
         let inner = layer.inner.lock().unwrap();
 
         // Write the images into a file
-        let path = layer
-            .path()
-            .expect("ImageLayer is supposed to have a layer path on disk");
+        let path = layer.path();
         // Note: This overwrites any existing file. There shouldn't be any.
         // FIXME: throw an error instead?
         let file = File::create(&path)?;
@@ -339,7 +317,7 @@ impl ImageLayer {
         // This flushes the underlying 'buf_writer'.
         book.close()?;
 
-        trace!("saved {}", &path.display());
+        trace!("saved {}", path.display());
 
         drop(inner);
 
@@ -444,15 +422,7 @@ impl ImageLayer {
     }
 
     fn open_book(&self) -> Result<(PathBuf, Book<File>)> {
-        let path = Self::path_for(
-            &self.path_or_conf,
-            self.timelineid,
-            self.tenantid,
-            &ImageFileName {
-                seg: self.seg,
-                lsn: self.lsn,
-            },
-        );
+        let path = self.path();
 
         let file = File::open(&path)?;
         let book = Book::new(file)?;
@@ -498,5 +468,21 @@ impl ImageLayer {
                 image_type: ImageType::Blocky { num_blocks: 0 },
             }),
         })
+    }
+
+    pub fn layer_name(&self) -> ImageFileName {
+        ImageFileName {
+            seg: self.seg,
+            lsn: self.lsn,
+        }
+    }
+
+    fn path(&self) -> PathBuf {
+        Self::path_for(
+            &self.path_or_conf,
+            self.timelineid,
+            self.tenantid,
+            &self.layer_name(),
+        )
     }
 }
