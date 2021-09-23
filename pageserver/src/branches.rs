@@ -222,10 +222,6 @@ fn bootstrap_timeline(
     // LSN, and any WAL after that.
     let timeline = repo.create_empty_timeline(tli)?;
     restore_local_repo::import_timeline_from_postgres_datadir(&pgdata_path, &*timeline, lsn)?;
-
-    let wal_dir = pgdata_path.join("pg_wal");
-    restore_local_repo::import_timeline_wal(&wal_dir, &*timeline, lsn)?;
-
     timeline.checkpoint()?;
 
     println!(

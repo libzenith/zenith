@@ -11,7 +11,7 @@
 //! parent timeline, and the last LSN that has been written to disk.
 //!
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use bookfile::Book;
 use bytes::Bytes;
 use lazy_static::lazy_static;
@@ -35,7 +35,6 @@ use crate::layered_repository::inmemory_layer::FreezeLayers;
 use crate::relish::*;
 use crate::relish_storage::storage_uploader::QueueBasedRelishUploader;
 use crate::repository::{GcResult, Repository, Timeline, WALRecord};
-use crate::restore_local_repo::import_timeline_wal;
 use crate::walredo::WalRedoManager;
 use crate::PageServerConf;
 use crate::{ZTenantId, ZTimelineId};
@@ -253,11 +252,6 @@ impl LayeredRepository {
                     timelineid,
                     timeline.get_last_record_lsn()
                 );
-                let wal_dir = self
-                    .conf
-                    .timeline_path(&timelineid, &self.tenantid)
-                    .join("wal");
-                import_timeline_wal(&wal_dir, timeline.as_ref(), timeline.get_last_record_lsn())?;
 
                 if cfg!(debug_assertions) {
                     // check again after wal loading
@@ -799,47 +793,39 @@ impl Timeline for LayeredTimeline {
 
         debug!("put_truncation: {} to {} blocks at {}", rel, relsize, lsn);
 
-        let oldsize = self
-            .get_relish_size(rel, self.get_last_record_lsn())?
-            .ok_or_else(|| {
-                anyhow!(
-                    "attempted to truncate non-existent relish {} at {}",
+        if let Some(oldsize) = self.get_relish_size(rel, self.get_last_record_lsn())? {
+            if oldsize <= relsize {
+                return Ok(());
+            }
+            let old_last_seg = (oldsize - 1) / RELISH_SEG_SIZE;
+
+            let last_remain_seg = if relsize == 0 {
+                0
+            } else {
+                (relsize - 1) / RELISH_SEG_SIZE
+            };
+
+            // Drop segments beyond the last remaining segment.
+            for remove_segno in (last_remain_seg + 1)..=old_last_seg {
+                let seg = SegmentTag {
                     rel,
-                    lsn
-                )
-            })?;
+                    segno: remove_segno,
+                };
+                self.perform_write_op(seg, lsn, |layer| layer.drop_segment(lsn))?;
+            }
 
-        if oldsize <= relsize {
-            return Ok(());
+            // Truncate the last remaining segment to the specified size
+            if relsize == 0 || relsize % RELISH_SEG_SIZE != 0 {
+                let seg = SegmentTag {
+                    rel,
+                    segno: last_remain_seg,
+                };
+                self.perform_write_op(seg, lsn, |layer| {
+                    layer.put_truncation(lsn, relsize % RELISH_SEG_SIZE)
+                })?;
+            }
+            self.decrease_current_logical_size((oldsize - relsize) * BLCKSZ as u32);
         }
-        let old_last_seg = (oldsize - 1) / RELISH_SEG_SIZE;
-
-        let last_remain_seg = if relsize == 0 {
-            0
-        } else {
-            (relsize - 1) / RELISH_SEG_SIZE
-        };
-
-        // Drop segments beyond the last remaining segment.
-        for remove_segno in (last_remain_seg + 1)..=old_last_seg {
-            let seg = SegmentTag {
-                rel,
-                segno: remove_segno,
-            };
-            self.perform_write_op(seg, lsn, |layer| layer.drop_segment(lsn))?;
-        }
-
-        // Truncate the last remaining segment to the specified size
-        if relsize == 0 || relsize % RELISH_SEG_SIZE != 0 {
-            let seg = SegmentTag {
-                rel,
-                segno: last_remain_seg,
-            };
-            self.perform_write_op(seg, lsn, |layer| {
-                layer.put_truncation(lsn, relsize % RELISH_SEG_SIZE)
-            })?;
-        }
-        self.decrease_current_logical_size((oldsize - relsize) * BLCKSZ as u32);
         Ok(())
     }
 
