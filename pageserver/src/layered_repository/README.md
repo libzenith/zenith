@@ -35,7 +35,7 @@ snapshot LSN + 1
 
 Layers can be open or historical:
 - Open layer is a writeable one. Only InMemory layer can be open.
-FIXME: If open layer is dropped, it is not writeable, so it should be turned into historical, 
+FIXME: If open layer is dropped, it is not writeable, so it should be turned into historical,
 but now it is not implemented - see bug #569.
 - Historical layer is the one that cannot be modified anymore. Now only OnDisk layers can be historical.
 
@@ -308,9 +308,9 @@ table:
 	main/orders_200_300   DELETE
 	main/orders_300       STILL NEEDED BY orders_300_400
 	main/orders_300_400   KEEP, NEWER THAN GC HORIZON
-	main/orders_400       .. 
-	main/orders_400_500   .. 
-	main/orders_500       .. 
+	main/orders_400       ..
+	main/orders_400_500   ..
+	main/orders_500       ..
 	main/customers_100      DELETE
 	main/customers_100_200  DELETE
 	main/customers_200      KEEP, NO NEWER VERSION

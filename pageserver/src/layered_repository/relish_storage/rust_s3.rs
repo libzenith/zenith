@@ -5,9 +5,9 @@ use std::path::Path;
 use anyhow::Context;
 use s3::{bucket::Bucket, creds::Credentials, region::Region};
 
-use crate::{relish_storage::strip_workspace_prefix, S3Config};
+use crate::S3Config;
 
-use super::RelishStorage;
+use super::{strip_workspace_prefix, RelishInfo, RelishStorage};
 
 const S3_FILE_SEPARATOR: char = '/';
 
@@ -69,6 +69,10 @@ impl RelishStorage for RustS3 {
         Ok(S3ObjectKey(key))
     }
 
+    fn relish_info(relish: &Self::RelishStoragePath) -> anyhow::Result<RelishInfo> {
+        todo!("TODO kb")
+    }
+
     async fn list_relishes(&self) -> anyhow::Result<Vec<Self::RelishStoragePath>> {
         let list_response = self
             .bucket
@@ -88,10 +92,14 @@ impl RelishStorage for RustS3 {
         from: &Self::RelishStoragePath,
         to: &Path,
     ) -> anyhow::Result<()> {
-        let mut target_file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(to)
-            .with_context(|| format!("Failed to open target s3 destination at {}", to.display()))?;
+        let mut target_file = std::io::BufWriter::new(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(to)
+                .with_context(|| {
+                    format!("Failed to open target s3 destination at {}", to.display())
+                })?,
+        );
         let code = self
             .bucket
             .get_object_stream(from.key(), &mut target_file)
@@ -125,7 +133,8 @@ impl RelishStorage for RustS3 {
     }
 
     async fn upload_relish(&self, from: &Path, to: &Self::RelishStoragePath) -> anyhow::Result<()> {
-        let mut local_file = tokio::fs::OpenOptions::new().read(true).open(from).await?;
+        let mut local_file =
+            tokio::io::BufReader::new(tokio::fs::OpenOptions::new().read(true).open(from).await?);
 
         let code = self
             .bucket

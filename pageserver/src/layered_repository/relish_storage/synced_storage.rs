@@ -9,15 +9,17 @@ use std::{
 use anyhow::Context;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::Semaphore;
-use zenith_utils::{lsn::Lsn, zid::ZTimelineId};
+use zenith_utils::{
+    lsn::Lsn,
+    zid::{ZTenantId, ZTimelineId},
+};
 
-use crate::{relish_storage::RelishStorage, PageServerConf, RelishStorageConfig};
+use crate::{PageServerConf, RelishStorageConfig};
 
-use super::{local_fs::LocalFs, rust_s3::RustS3};
+use super::{local_fs::LocalFs, rust_s3::RustS3, RelishStorage};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SyncTask {
-    // TODO kb also have tenant_id here?
     UrgentDownload(ZTimelineId),
     Upload(TimelineUpload),
     Download(ZTimelineId),
@@ -25,6 +27,7 @@ enum SyncTask {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TimelineUpload {
+    pub tenant_id: ZTenantId,
     pub timeline_id: ZTimelineId,
     pub disk_consistent_lsn: Lsn,
     pub metadata_path: PathBuf,
@@ -57,7 +60,6 @@ impl RelishStorageWithBackgroundSync {
         }
     }
 
-    // TODO kb odd and wrong. Use either a disabled enum variant or Option instead?
     fn disable(&self) {
         self.enabled
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -125,45 +127,58 @@ fn run_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
 
     thread::Builder::new()
         .name("Queue based relish storage sync".to_string())
-        .spawn(move || loop {
-            match sync_tasks_queue.next() {
-                Some(task) => runtime.block_on(async {
-                    match task {
-                        SyncTask::Download(_timeline) | SyncTask::UrgentDownload(_timeline) => {
-                            todo!("TODO kb");
+        .spawn(move || {
+            let uploaded_relishes = runtime
+                .block_on(relish_storage.list_relishes())
+                .expect("TODO kb");
+            // Now think of how Vec<P> is mapped against TimelineUpload data (we need to determine that the upload happened)
+            // (need to parse the uploaded paths at least)
+            // let mut uploads: HashMap<ZTimelineId, BTreeSet<Lsn>>
+            // downloads should go straight to queue
+            // let mut files_to_download: Vec<P>
+            loop {
+                match sync_tasks_queue.next() {
+                    Some(task) => runtime.block_on(async {
+                        match task {
+                            SyncTask::Download(_timeline) | SyncTask::UrgentDownload(_timeline) => {
+                                todo!("TODO kb");
+                            }
+                            SyncTask::Upload(layer_upload) => {
+                                upload_timeline(
+                                    &sync_tasks_queue,
+                                    &relish_storage,
+                                    page_server_workdir,
+                                    layer_upload,
+                                )
+                                .await
+                            }
                         }
-                        SyncTask::Upload(layer_upload) => {
-                            upload_layer(
-                                &sync_tasks_queue,
-                                &relish_storage,
-                                page_server_workdir,
-                                layer_upload,
-                            )
-                            .await
-                        }
+                    }),
+                    None => {
+                        thread::sleep(Duration::from_secs(1));
+                        continue;
                     }
-                }),
-                None => {
-                    thread::sleep(Duration::from_secs(1));
-                    continue;
-                }
-            };
+                };
+            }
         })
 }
 
-async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
+async fn upload_timeline<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
     sync_tasks_queue: &RelishStorageWithBackgroundSync,
     relish_storage: &S,
     page_server_workdir: &Path,
-    layer_upload: TimelineUpload,
+    timeline_upload: TimelineUpload,
 ) {
-    log::debug!("Uploading layers for timeline {}", layer_upload.timeline_id);
+    log::debug!(
+        "Uploading layers for timeline {}",
+        timeline_upload.timeline_id
+    );
     let mut failed_relish_uploads = Vec::new();
     let mut relish_uploads = FuturesUnordered::new();
 
     // TODO kb put into config
     let concurrent_upload_limit = Arc::new(Semaphore::new(10));
-    for relish_local_path in layer_upload.disk_relishes {
+    for relish_local_path in timeline_upload.disk_relishes {
         let upload_limit = Arc::clone(&concurrent_upload_limit);
         relish_uploads.push(async move {
             let permit = upload_limit
@@ -200,7 +215,7 @@ async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
         match upload_file(
             relish_storage,
             page_server_workdir,
-            &layer_upload.metadata_path,
+            &timeline_upload.metadata_path,
         )
         .await
         {
@@ -208,12 +223,12 @@ async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
             Err(e) => {
                 log::error!(
                     "Failed to upload metadata file '{}', reason: {}",
-                    layer_upload.metadata_path.display(),
+                    timeline_upload.metadata_path.display(),
                     e
                 );
                 sync_tasks_queue.schedule_timeline_upload(TimelineUpload {
                     disk_relishes: Vec::new(),
-                    ..layer_upload
+                    ..timeline_upload
                 });
             }
         }
@@ -224,7 +239,7 @@ async fn upload_layer<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
         );
         sync_tasks_queue.schedule_timeline_upload(TimelineUpload {
             disk_relishes: failed_relish_uploads,
-            ..layer_upload
+            ..timeline_upload
         });
     }
 }

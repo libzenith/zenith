@@ -15,6 +15,9 @@ pub mod synced_storage;
 use std::path::Path;
 
 use anyhow::Context;
+use zenith_utils::zid::{ZTenantId, ZTimelineId};
+
+use super::filename::{DeltaFileName, ImageFileName};
 
 /// Storage (potentially remote) API to manage its state.
 #[async_trait::async_trait]
@@ -25,6 +28,8 @@ pub trait RelishStorage: Send + Sync {
         page_server_workdir: &Path,
         relish_local_path: &Path,
     ) -> anyhow::Result<Self::RelishStoragePath>;
+
+    fn relish_info(relish: &Self::RelishStoragePath) -> anyhow::Result<RelishInfo>;
 
     async fn list_relishes(&self) -> anyhow::Result<Vec<Self::RelishStoragePath>>;
 
@@ -37,6 +42,19 @@ pub trait RelishStorage: Send + Sync {
     async fn delete_relish(&self, path: &Self::RelishStoragePath) -> anyhow::Result<()>;
 
     async fn upload_relish(&self, from: &Path, to: &Self::RelishStoragePath) -> anyhow::Result<()>;
+}
+
+pub struct RelishInfo {
+    tenant_id: ZTenantId,
+    timeline_id: ZTimelineId,
+    kind: RelishKind,
+}
+
+#[derive(Debug)]
+pub enum RelishKind {
+    Metadata,
+    DeltaRelish(DeltaFileName),
+    ImageRelish(ImageFileName),
 }
 
 fn strip_workspace_prefix<'a>(

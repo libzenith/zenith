@@ -15,7 +15,7 @@ use std::{
 
 use anyhow::{bail, Context};
 
-use super::{strip_workspace_prefix, RelishStorage};
+use super::{strip_workspace_prefix, RelishInfo, RelishStorage};
 
 pub struct LocalFs {
     root: PathBuf,
@@ -58,6 +58,10 @@ impl RelishStorage for LocalFs {
         relish_local_path: &Path,
     ) -> anyhow::Result<Self::RelishStoragePath> {
         Ok(strip_workspace_prefix(page_server_workdir, relish_local_path)?.to_path_buf())
+    }
+
+    fn relish_info(relish: &Self::RelishStoragePath) -> anyhow::Result<RelishInfo> {
+        todo!("TODO kb")
     }
 
     async fn list_relishes(&self) -> anyhow::Result<Vec<Self::RelishStoragePath>> {
