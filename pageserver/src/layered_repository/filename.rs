@@ -5,6 +5,7 @@ use crate::layered_repository::storage_layer::SegmentTag;
 use crate::relish::*;
 use crate::PageServerConf;
 use crate::{ZTenantId, ZTimelineId};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
@@ -269,9 +270,11 @@ impl fmt::Display for ImageFileName {
     }
 }
 
+#[derive(Debug)]
 pub struct TimelineFiles {
-    pub image_layers: Vec<(ImageFileName, PathBuf)>,
-    pub delta_layers: Vec<(DeltaFileName, PathBuf)>,
+    // TODO kb do we need to pass around PathBuf if we can determine with the *FileName already?
+    pub image_layers: BTreeSet<(ImageFileName, PathBuf)>,
+    pub delta_layers: BTreeSet<(DeltaFileName, PathBuf)>,
     pub metadata: Option<PathBuf>,
 }
 
@@ -284,8 +287,8 @@ pub fn list_timeline_files(
 ) -> Result<TimelineFiles> {
     let path = conf.timeline_path(&timelineid, &tenantid);
 
-    let mut image_layers = Vec::new();
-    let mut delta_layers = Vec::new();
+    let mut image_layers = BTreeSet::new();
+    let mut delta_layers = BTreeSet::new();
     let mut metadata = None::<PathBuf>;
     for direntry in fs::read_dir(path)? {
         let entry = direntry?;
@@ -293,9 +296,9 @@ pub fn list_timeline_files(
         let fname = fname.to_str().unwrap();
 
         if let Some(deltafilename) = DeltaFileName::from_str(fname) {
-            delta_layers.push((deltafilename, entry.path()));
+            delta_layers.insert((deltafilename, entry.path()));
         } else if let Some(imgfilename) = ImageFileName::from_str(fname) {
-            image_layers.push((imgfilename, entry.path()));
+            image_layers.insert((imgfilename, entry.path()));
         } else if fname == "metadata" {
             if let Some(old_path) = metadata.replace(entry.path()) {
                 anyhow::bail!(

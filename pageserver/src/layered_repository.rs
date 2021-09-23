@@ -55,7 +55,8 @@ mod image_layer;
 mod inmemory_layer;
 mod interval_tree;
 mod layer_map;
-mod relish_storage;
+// TODO kb stands out, need something more abstract?
+pub mod relish_storage;
 mod storage_layer;
 
 use delta_layer::DeltaLayer;
@@ -361,7 +362,7 @@ impl LayeredRepository {
         tenantid: ZTenantId,
         data: &TimelineMetadata,
     ) -> Result<PathBuf> {
-        let path = conf.timeline_path(&timelineid, &tenantid).join("metadata");
+        let path = metadata_path(conf, timelineid, tenantid);
         let mut file = File::create(&path)?;
 
         info!("saving metadata {}", path.display());
@@ -376,7 +377,7 @@ impl LayeredRepository {
         timelineid: ZTimelineId,
         tenantid: ZTenantId,
     ) -> Result<TimelineMetadata> {
-        let path = conf.timeline_path(&timelineid, &tenantid).join("metadata");
+        let path = metadata_path(conf, timelineid, tenantid);
         let data = std::fs::read(&path)?;
 
         let data = TimelineMetadata::des(&data)?;
@@ -1027,7 +1028,7 @@ impl LayeredTimeline {
             self.timelineid
         );
         let mut layers = self.layers.lock().unwrap();
-        let mut timeline_files =
+        let timeline_files =
             filename::list_timeline_files(self.conf, self.timelineid, self.tenantid)?;
 
         let mut disk_relishes = Vec::new();
@@ -1049,10 +1050,12 @@ impl LayeredTimeline {
             layers.insert_historic(Arc::new(layer));
         }
 
+        // TODO kb ensure, that the order is correct
         // Then for the Delta files. The delta files are created in order starting
         // from the oldest file, because each DeltaLayer needs a reference to its
         // predecessor.
-        timeline_files.delta_layers.sort();
+        // timeline_files.delta_layers.sort();
+
         for (filename, layer_path) in timeline_files.delta_layers {
             disk_relishes.push(layer_path);
             // TODO kb is this correct?
@@ -1890,6 +1893,14 @@ pub fn dump_layerfile_from_path(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn metadata_path(
+    conf: &'static PageServerConf,
+    timelineid: ZTimelineId,
+    tenantid: ZTenantId,
+) -> PathBuf {
+    conf.timeline_path(&timelineid, &tenantid).join("metadata")
 }
 
 /// Check for equality of Layer memory addresses

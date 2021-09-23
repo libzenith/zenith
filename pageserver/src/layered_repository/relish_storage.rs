@@ -22,7 +22,7 @@ use super::filename::{DeltaFileName, ImageFileName};
 /// Storage (potentially remote) API to manage its state.
 #[async_trait::async_trait]
 pub trait RelishStorage: Send + Sync {
-    type RelishStoragePath;
+    type RelishStoragePath: std::fmt::Debug;
 
     fn derive_destination(
         page_server_workdir: &Path,

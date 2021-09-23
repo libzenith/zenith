@@ -3,7 +3,7 @@
 //
 
 use log::*;
-use pageserver::{defaults::*, relish_storage};
+use pageserver::defaults::*;
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -473,7 +473,10 @@ fn start_pageserver(conf: &'static PageServerConf) -> Result<()> {
 
     join_handles.push(page_service_thread);
 
-    let storage_sync_thread = relish_storage::synced_storage::create_storage_sync_thread(conf)?;
+    let storage_sync_thread =
+        pageserver::layered_repository::relish_storage::synced_storage::create_storage_sync_thread(
+            conf,
+        )?;
 
     for handle in join_handles.into_iter() {
         handle

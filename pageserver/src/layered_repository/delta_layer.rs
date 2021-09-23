@@ -367,7 +367,7 @@ impl Layer for DeltaLayer {
 }
 
 impl DeltaLayer {
-    fn path_for(
+    pub fn path_for(
         path_or_conf: &PathOrConf,
         timelineid: ZTimelineId,
         tenantid: ZTenantId,

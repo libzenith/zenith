@@ -1,5 +1,5 @@
 use std::{
-    collections::BinaryHeap,
+    collections::{BTreeSet, BinaryHeap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{atomic::AtomicBool, Arc, Mutex},
     thread,
@@ -14,7 +14,16 @@ use zenith_utils::{
     zid::{ZTenantId, ZTimelineId},
 };
 
-use crate::{PageServerConf, RelishStorageConfig};
+use crate::{
+    layered_repository::{
+        delta_layer::DeltaLayer,
+        filename::{PathOrConf, TimelineFiles},
+        image_layer::ImageLayer,
+        metadata_path,
+        relish_storage::RelishKind,
+    },
+    PageServerConf, RelishStorageConfig,
+};
 
 use super::{local_fs::LocalFs, rust_s3::RustS3, RelishStorage};
 
@@ -110,16 +119,16 @@ pub fn create_storage_sync_thread(
     // }
     let relish_storage = LocalFs::new(PathBuf::from("/Users/someonetoignore/Downloads/tmp_dir"))?;
     Ok(Some(run_thread(
+        config,
         Arc::clone(&RELISH_STORAGE_WITH_BACKGROUND_SYNC),
         relish_storage,
-        &config.workdir,
     )?))
 }
 
-fn run_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
+fn run_thread<P: std::fmt::Debug, S: 'static + RelishStorage<RelishStoragePath = P>>(
+    config: &'static PageServerConf,
     sync_tasks_queue: Arc<RelishStorageWithBackgroundSync>,
     relish_storage: S,
-    page_server_workdir: &'static Path,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -128,12 +137,15 @@ fn run_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
     thread::Builder::new()
         .name("Queue based relish storage sync".to_string())
         .spawn(move || {
-            let uploaded_relishes = runtime
-                .block_on(relish_storage.list_relishes())
-                .expect("TODO kb");
+            let mut timeline_uploads = categorize_relish_uploads::<P, S>(
+                config,
+                runtime
+                    .block_on(relish_storage.list_relishes())
+                    .expect("Failed to list relish uploads"),
+            );
             // Now think of how Vec<P> is mapped against TimelineUpload data (we need to determine that the upload happened)
             // (need to parse the uploaded paths at least)
-            // let mut uploads: HashMap<ZTimelineId, BTreeSet<Lsn>>
+            // let mut uploads: HashMap<(ZTenantId, ZTimelineId), BTreeSet<Lsn>>
             // downloads should go straight to queue
             // let mut files_to_download: Vec<P>
             loop {
@@ -145,9 +157,10 @@ fn run_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
                             }
                             SyncTask::Upload(layer_upload) => {
                                 upload_timeline(
+                                    &mut timeline_uploads,
                                     &sync_tasks_queue,
                                     &relish_storage,
-                                    page_server_workdir,
+                                    &config.workdir,
                                     layer_upload,
                                 )
                                 .await
@@ -163,22 +176,110 @@ fn run_thread<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
         })
 }
 
+fn categorize_relish_uploads<
+    P: std::fmt::Debug,
+    S: 'static + RelishStorage<RelishStoragePath = P>,
+>(
+    config: &'static PageServerConf,
+    uploaded_relishes: Vec<P>,
+) -> HashMap<(ZTenantId, ZTimelineId), TimelineFiles> {
+    let conf = PathOrConf::Conf(config);
+
+    let mut timelines = HashMap::new();
+
+    for upload in uploaded_relishes {
+        match S::relish_info(&upload) {
+            Ok(relish_info) => {
+                let timeline_files = timelines
+                    .entry((relish_info.tenant_id, relish_info.timeline_id))
+                    .or_insert_with(|| TimelineFiles {
+                        image_layers: BTreeSet::new(),
+                        delta_layers: BTreeSet::new(),
+                        metadata: None,
+                    });
+
+                match relish_info.kind {
+                    RelishKind::Metadata => {
+                        timeline_files.metadata = Some(metadata_path(
+                            config,
+                            relish_info.timeline_id,
+                            relish_info.tenant_id,
+                        ))
+                    }
+                    RelishKind::DeltaRelish(delta_relish) => {
+                        let delta_path = DeltaLayer::path_for(
+                            &conf,
+                            relish_info.timeline_id,
+                            relish_info.tenant_id,
+                            &delta_relish,
+                        );
+                        timeline_files
+                            .delta_layers
+                            .insert((delta_relish, delta_path));
+                    }
+                    RelishKind::ImageRelish(image_relish) => {
+                        let image_path = ImageLayer::path_for(
+                            &conf,
+                            relish_info.timeline_id,
+                            relish_info.tenant_id,
+                            &image_relish,
+                        );
+                        timeline_files
+                            .image_layers
+                            .insert((image_relish, image_path));
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!(
+                    "Failed to get relish info from the path '{:?}', reason: {}",
+                    upload,
+                    e
+                );
+                continue;
+            }
+        }
+    }
+
+    timelines
+}
+
 async fn upload_timeline<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
+    existing_uploads: &mut HashMap<(ZTenantId, ZTimelineId), TimelineFiles>,
     sync_tasks_queue: &RelishStorageWithBackgroundSync,
     relish_storage: &S,
     page_server_workdir: &Path,
-    timeline_upload: TimelineUpload,
+    mut new_upload: TimelineUpload,
 ) {
-    log::debug!(
-        "Uploading layers for timeline {}",
-        timeline_upload.timeline_id
-    );
+    log::debug!("Uploading layers for timeline {}", new_upload.timeline_id);
     let mut failed_relish_uploads = Vec::new();
     let mut relish_uploads = FuturesUnordered::new();
 
+    let uploaded_files = existing_uploads.get(&(new_upload.tenant_id, new_upload.timeline_id));
+    if let Some(uploaded_timeline_files) = uploaded_files {
+        let uploaded_paths = uploaded_timeline_files
+            .image_layers
+            .iter()
+            .map(|(_, layer_path)| layer_path)
+            .chain(
+                uploaded_timeline_files
+                    .delta_layers
+                    .iter()
+                    .map(|(_, layer_path)| layer_path),
+            )
+            .collect::<HashSet<_>>();
+        new_upload
+            .disk_relishes
+            .retain(|path_to_upload| !uploaded_paths.contains(path_to_upload));
+        if new_upload.disk_relishes.is_empty() && uploaded_timeline_files.metadata.is_some() {
+            log::debug!("All layers are uploaded already");
+            return;
+        }
+    }
+
     // TODO kb put into config
     let concurrent_upload_limit = Arc::new(Semaphore::new(10));
-    for relish_local_path in timeline_upload.disk_relishes {
+    for relish_local_path in &new_upload.disk_relishes {
         let upload_limit = Arc::clone(&concurrent_upload_limit);
         relish_uploads.push(async move {
             let permit = upload_limit
@@ -215,20 +316,36 @@ async fn upload_timeline<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
         match upload_file(
             relish_storage,
             page_server_workdir,
-            &timeline_upload.metadata_path,
+            &new_upload.metadata_path,
         )
         .await
         {
-            Ok(()) => log::debug!("Successfully uploaded the metadata file"),
+            Ok(()) => {
+                log::debug!("Successfully uploaded the metadata file");
+                let entry_to_update = existing_uploads
+                    .entry((new_upload.tenant_id, new_upload.timeline_id))
+                    .or_insert_with(|| TimelineFiles {
+                        image_layers: BTreeSet::new(),
+                        delta_layers: BTreeSet::new(),
+                        metadata: None,
+                    });
+
+                // TODO kb separate disk relishes? also need different data.
+                // entry_to_update.image_layers.extend(iter);
+                // entry_to_update
+                //     .delta_layers
+                //     .extend(new_upload.disk_relishes.into_iter());
+                entry_to_update.metadata = Some(new_upload.metadata_path);
+            }
             Err(e) => {
                 log::error!(
                     "Failed to upload metadata file '{}', reason: {}",
-                    timeline_upload.metadata_path.display(),
+                    new_upload.metadata_path.display(),
                     e
                 );
                 sync_tasks_queue.schedule_timeline_upload(TimelineUpload {
                     disk_relishes: Vec::new(),
-                    ..timeline_upload
+                    ..new_upload
                 });
             }
         }
@@ -239,7 +356,7 @@ async fn upload_timeline<P, S: 'static + RelishStorage<RelishStoragePath = P>>(
         );
         sync_tasks_queue.schedule_timeline_upload(TimelineUpload {
             disk_relishes: failed_relish_uploads,
-            ..timeline_upload
+            ..new_upload
         });
     }
 }
