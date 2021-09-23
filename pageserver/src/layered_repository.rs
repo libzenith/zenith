@@ -35,7 +35,6 @@ use crate::layered_repository::inmemory_layer::FreezeLayers;
 use crate::relish::*;
 use crate::relish_storage::storage_uploader::QueueBasedRelishUploader;
 use crate::repository::{GcResult, Repository, Timeline, WALRecord};
-use crate::restore_local_repo::import_timeline_wal;
 use crate::walredo::WalRedoManager;
 use crate::PageServerConf;
 use crate::{ZTenantId, ZTimelineId};
@@ -253,11 +252,6 @@ impl LayeredRepository {
                     timelineid,
                     timeline.get_last_record_lsn()
                 );
-                let wal_dir = self
-                    .conf
-                    .timeline_path(&timelineid, &self.tenantid)
-                    .join("wal");
-                import_timeline_wal(&wal_dir, timeline.as_ref(), timeline.get_last_record_lsn())?;
 
                 if cfg!(debug_assertions) {
                     // check again after wal loading

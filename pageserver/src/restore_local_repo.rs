@@ -9,9 +9,7 @@ use std::cmp::min;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use bytes::{Buf, Bytes};
@@ -278,100 +276,6 @@ fn import_slru_file(timeline: &dyn Timeline, lsn: Lsn, slru: SlruKind, path: &Pa
         rpageno += 1;
 
         // TODO: Check that the file isn't unexpectedly large, not larger than SLRU_PAGES_PER_SEGMENT pages
-    }
-
-    Ok(())
-}
-
-/// Scan PostgreSQL WAL files in given directory
-/// and load all records >= 'startpoint' into the repository.
-pub fn import_timeline_wal(walpath: &Path, timeline: &dyn Timeline, startpoint: Lsn) -> Result<()> {
-    let mut waldecoder = WalStreamDecoder::new(startpoint);
-
-    let mut segno = startpoint.segment_number(pg_constants::WAL_SEGMENT_SIZE);
-    let mut offset = startpoint.segment_offset(pg_constants::WAL_SEGMENT_SIZE);
-    let mut last_lsn = startpoint;
-
-    let checkpoint_bytes = timeline.get_page_at_lsn(RelishTag::Checkpoint, 0, startpoint)?;
-    let mut checkpoint = CheckPoint::decode(&checkpoint_bytes)?;
-
-    loop {
-        // FIXME: assume postgresql tli 1 for now
-        let filename = XLogFileName(1, segno, pg_constants::WAL_SEGMENT_SIZE);
-        let mut buf = Vec::new();
-
-        //Read local file
-        let mut path = walpath.join(&filename);
-
-        // It could be as .partial
-        if !PathBuf::from(&path).exists() {
-            path = walpath.join(filename + ".partial");
-        }
-
-        // Slurp the WAL file
-        let open_result = File::open(&path);
-        if let Err(e) = &open_result {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                break;
-            }
-        }
-        let mut file = open_result?;
-
-        if offset > 0 {
-            file.seek(SeekFrom::Start(offset as u64))?;
-        }
-
-        let nread = file.read_to_end(&mut buf)?;
-        if nread != pg_constants::WAL_SEGMENT_SIZE - offset as usize {
-            // Maybe allow this for .partial files?
-            error!("read only {} bytes from WAL file", nread);
-        }
-
-        waldecoder.feed_bytes(&buf);
-
-        let mut nrecords = 0;
-        loop {
-            let rec = waldecoder.poll_decode();
-            if rec.is_err() {
-                // Assume that an error means we've reached the end of
-                // a partial WAL record. So that's ok.
-                trace!("WAL decoder error {:?}", rec);
-                break;
-            }
-            if let Some((lsn, recdata)) = rec.unwrap() {
-                // The previous record has been handled, let the repository know that
-                // it is up-to-date to this LSN. (We do this here on the "next" iteration,
-                // rather than right after the save_decoded_record, because at the end of
-                // the WAL, we will also need to perform the update of the checkpoint data
-                // with the same LSN as the last actual record.)
-                timeline.advance_last_record_lsn(last_lsn);
-
-                let decoded = decode_wal_record(recdata.clone());
-                save_decoded_record(&mut checkpoint, timeline, &decoded, recdata, lsn)?;
-                last_lsn = lsn;
-            } else {
-                break;
-            }
-            nrecords += 1;
-        }
-
-        info!("imported {} records up to {}", nrecords, last_lsn);
-
-        segno += 1;
-        offset = 0;
-    }
-
-    if last_lsn != startpoint {
-        info!(
-            "reached end of WAL at {}, updating checkpoint info",
-            last_lsn
-        );
-        let checkpoint_bytes = checkpoint.encode();
-        timeline.put_page_image(RelishTag::Checkpoint, 0, last_lsn, checkpoint_bytes)?;
-
-        timeline.advance_last_record_lsn(last_lsn);
-    } else {
-        info!("no WAL to import at {}", last_lsn);
     }
 
     Ok(())
