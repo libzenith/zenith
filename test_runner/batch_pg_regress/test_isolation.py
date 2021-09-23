@@ -26,7 +26,10 @@ def test_isolation(pageserver: ZenithPageserver, postgres: PostgresFactory, pg_b
     build_path = os.path.join(pg_distrib_dir, 'build/src/test/isolation')
     src_path = os.path.join(base_dir, 'vendor/postgres/src/test/isolation')
     bindir = os.path.join(pg_distrib_dir, 'bin')
-    schedule = os.path.join(src_path, 'isolation_schedule')
+    # Note that we use custom schedule here to skip some flacky tests:
+    # - test: timeouts is disabled.
+    # Keep this schedule in sync with vendor/postgres/ isolation test set
+    schedule = os.path.join(base_dir, 'test_runner/batch_pg_regress/isolation_schedule')
     pg_isolation_regress = os.path.join(build_path, 'pg_isolation_regress')
 
     pg_isolation_regress_command = [
