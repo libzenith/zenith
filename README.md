@@ -25,7 +25,7 @@ Pageserver consists of:
 On Ubuntu or Debian this set of packages should be sufficient to build the code:
 ```text
 apt install build-essential libtool libreadline-dev zlib1g-dev flex bison libseccomp-dev \
-libssl-dev clang
+libssl-dev clang pkg-config libpq-dev
 ```
 
 [Rust] 1.52 or later is also required.
@@ -115,6 +115,14 @@ git clone --recursive https://github.com/zenithdb/zenith.git
 make # builds also postgres and installs it to ./tmp_install
 cd test_runner
 pytest
+```
+
+If you see a `Found interfering processes running` error, stop pageserver and postgres nodes for all branches:
+
+```sh
+./target/debug/zenith pg stop migration_check
+./target/debug/zenith pg stop main
+./target/debug/zenith stop
 ```
 
 ## Documentation
