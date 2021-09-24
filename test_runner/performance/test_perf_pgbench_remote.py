@@ -55,6 +55,7 @@ def connstr(request):
 
 
 @pytest.mark.parametrize("scale,transactions", [(1, 1000), (2, 2000)])
+@pytest.mark.remote
 def test_pg_bench_remote(
     zenbenchmark: ZenithBenchmarker, connstr: str, scale: int, transactions: int
 ):

@@ -127,22 +127,6 @@ class PgBenchRunResult:
             run_end_timestamp=run_end_timestamp,
         )
 
-
-[
-    "0transaction type: <builtin: TPC-B (sort of)>",
-    "1scaling factor: 1",
-    "2query mode: simple",
-    "3number of clients: 1",
-    "4number of threads: 1",
-    "5number of transactions per client: 1000",
-    "6number of transactions actually processed: 1000/1000",
-    "7latency average = 1.452 ms",
-    "8latency stddev = 0.604 ms",
-    "9tps = 685.866646 (including connections establishing)",
-    "10tps = 688.591762 (excluding connections establishing)",
-]
-
-
 class ZenithBenchmarker:
     """
     An object for recording benchmark results. This is created for each test
