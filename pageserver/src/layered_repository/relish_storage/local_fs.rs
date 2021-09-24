@@ -15,7 +15,7 @@ use std::{
 
 use anyhow::{bail, Context};
 
-use super::{strip_workspace_prefix, RelishInfo, RelishStorage};
+use super::{parse_relish_data, strip_workspace_prefix, RelishInfo, RelishStorage};
 
 pub struct LocalFs {
     root: PathBuf,
@@ -61,7 +61,10 @@ impl RelishStorage for LocalFs {
     }
 
     fn relish_info(relish: &Self::RelishStoragePath) -> anyhow::Result<RelishInfo> {
-        todo!("TODO kb")
+        parse_relish_data(
+            split_relish_key_into_data_segments(relish),
+            relish.to_string_lossy().as_ref(),
+        )
     }
 
     async fn list_relishes(&self) -> anyhow::Result<Vec<Self::RelishStoragePath>> {
@@ -159,4 +162,27 @@ async fn create_target_directory(target_file_path: &Path) -> anyhow::Result<()> 
         tokio::fs::create_dir_all(target_dir).await?;
     }
     Ok(())
+}
+
+fn split_relish_key_into_data_segments(relish: &Path) -> Option<(&str, &str, &str)> {
+    let mut segments = relish
+        .iter()
+        .skip_while(|segment| segment.to_str() != Some("tenants"));
+    let tenants_segment = segments.next()?;
+    if tenants_segment != "tenants" {
+        return None;
+    }
+    let tenant_id = segments.next()?.to_str()?;
+    let timelines_segment = segments.next()?.to_str()?;
+    if timelines_segment != "timelines" {
+        return None;
+    }
+    let timeline_id = segments.next()?.to_str()?;
+    let relish_name = segments.next()?.to_str()?;
+
+    if segments.next().is_some() {
+        return None;
+    }
+
+    Some((&tenant_id, &timeline_id, &relish_name))
 }

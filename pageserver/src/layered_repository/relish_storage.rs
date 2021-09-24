@@ -14,8 +14,10 @@ pub mod synced_storage;
 
 use std::path::Path;
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use zenith_utils::zid::{ZTenantId, ZTimelineId};
+
+use crate::layered_repository::METADATA_FILE_NAME;
 
 use super::filename::{DeltaFileName, ImageFileName};
 
@@ -69,4 +71,42 @@ fn strip_workspace_prefix<'a>(
                 relish_local_path.display(),
             )
         })
+}
+
+fn parse_relish_data(
+    relish_data_segments: Option<(&str, &str, &str)>,
+    relish_key: &str,
+) -> anyhow::Result<RelishInfo> {
+    let (tenant_id_str, timeline_id_str, relish_name_str) = match relish_data_segments {
+        Some(data) => data,
+        None => bail!("Cannot path relish path '{}' into relish info", relish_key),
+    };
+    let tenant_id = tenant_id_str.parse::<ZTenantId>().with_context(|| {
+        format!(
+            "Failed to parse tenant id as part of relish path '{}'",
+            relish_key
+        )
+    })?;
+    let timeline_id = timeline_id_str.parse::<ZTimelineId>().with_context(|| {
+        format!(
+            "Failed to parse timeline id as part of relish path '{}'",
+            relish_key
+        )
+    })?;
+
+    let kind = if relish_name_str == METADATA_FILE_NAME {
+        RelishKind::Metadata
+    } else if let Some(delta_file_name) = DeltaFileName::from_str(relish_name_str) {
+        RelishKind::DeltaRelish(delta_file_name)
+    } else if let Some(image_file_name) = ImageFileName::from_str(relish_name_str) {
+        RelishKind::ImageRelish(image_file_name)
+    } else {
+        bail!("Relish with key '{}' has an unknown file name", relish_key)
+    };
+
+    Ok(RelishInfo {
+        tenant_id,
+        timeline_id,
+        kind,
+    })
 }

@@ -186,8 +186,8 @@ fn categorize_relish_uploads<
 ) -> HashMap<(ZTenantId, ZTimelineId), TimelineFiles> {
     let mut timelines = HashMap::new();
 
-    for upload in uploaded_relishes {
-        match S::relish_info(&upload) {
+    for relish_path in uploaded_relishes {
+        match S::relish_info(&relish_path) {
             Ok(relish_info) => {
                 let timeline_files = timelines
                     .entry((relish_info.tenant_id, relish_info.timeline_id))
@@ -216,7 +216,7 @@ fn categorize_relish_uploads<
             Err(e) => {
                 log::error!(
                     "Failed to get relish info from the path '{:?}', reason: {}",
-                    upload,
+                    relish_path,
                     e
                 );
                 continue;

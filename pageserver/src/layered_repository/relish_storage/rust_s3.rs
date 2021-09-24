@@ -7,7 +7,7 @@ use s3::{bucket::Bucket, creds::Credentials, region::Region};
 
 use crate::S3Config;
 
-use super::{strip_workspace_prefix, RelishInfo, RelishStorage};
+use super::{parse_relish_data, strip_workspace_prefix, RelishInfo, RelishStorage};
 
 const S3_FILE_SEPARATOR: char = '/';
 
@@ -27,7 +27,7 @@ pub struct RustS3 {
 
 impl RustS3 {
     // TODO kb add prefix to allow sharing the same bucket with different pageservers
-    /// Creates the relish storage, errors if incorrect AWS S3 configuration provided.
+    /// Creates the relish storage tenant_id: (), timeline_id: (), kind: () , errors if incorrect AWS S3 configuration provided.
     pub fn new(aws_config: &S3Config) -> anyhow::Result<Self> {
         let region = aws_config
             .bucket_region
@@ -70,7 +70,7 @@ impl RelishStorage for RustS3 {
     }
 
     fn relish_info(relish: &Self::RelishStoragePath) -> anyhow::Result<RelishInfo> {
-        todo!("TODO kb")
+        parse_relish_data(split_relish_key_into_data_segments(relish), relish.key())
     }
 
     async fn list_relishes(&self) -> anyhow::Result<Vec<Self::RelishStoragePath>> {
@@ -151,4 +151,28 @@ impl RelishStorage for RustS3 {
             Ok(())
         }
     }
+}
+
+fn split_relish_key_into_data_segments(relish: &S3ObjectKey) -> Option<(&str, &str, &str)> {
+    let mut segments = relish
+        .key()
+        .split(S3_FILE_SEPARATOR)
+        .skip_while(|&segment| segment != "tenants");
+    let tenants_segment = segments.next()?;
+    if tenants_segment != "tenants" {
+        return None;
+    }
+    let tenant_id = segments.next()?;
+    let timelines_segment = segments.next()?;
+    if timelines_segment != "timelines" {
+        return None;
+    }
+    let timeline_id = segments.next()?;
+    let relish_name = segments.next()?;
+
+    if segments.next().is_some() {
+        return None;
+    }
+
+    Some((tenant_id, timeline_id, relish_name))
 }

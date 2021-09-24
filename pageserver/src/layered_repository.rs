@@ -106,6 +106,8 @@ lazy_static! {
     .expect("failed to define a metric");
 }
 
+pub const METADATA_FILE_NAME: &str = "metadata";
+
 ///
 /// Repository consists of multiple timelines. Keep them in a hash table.
 ///
@@ -1906,7 +1908,8 @@ pub fn metadata_path(
     timelineid: ZTimelineId,
     tenantid: ZTenantId,
 ) -> PathBuf {
-    conf.timeline_path(&timelineid, &tenantid).join("metadata")
+    conf.timeline_path(&timelineid, &tenantid)
+        .join(METADATA_FILE_NAME)
 }
 
 /// Check for equality of Layer memory addresses

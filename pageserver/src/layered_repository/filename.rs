@@ -14,6 +14,8 @@ use anyhow::Result;
 use log::*;
 use zenith_utils::lsn::Lsn;
 
+use super::METADATA_FILE_NAME;
+
 // Note: LayeredTimeline::load_layer_map() relies on this sort order
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct DeltaFileName {
@@ -298,7 +300,7 @@ pub fn list_timeline_files(
             delta_layers.insert(deltafilename);
         } else if let Some(imgfilename) = ImageFileName::from_str(fname) {
             image_layers.insert(imgfilename);
-        } else if fname == "metadata" {
+        } else if fname == METADATA_FILE_NAME {
             if let Some(old_path) = metadata.replace(entry.path()) {
                 anyhow::bail!(
                     "Found two metadata files for a single layer. First: '{}', second: '{}'",
