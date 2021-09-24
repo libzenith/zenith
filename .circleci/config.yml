@@ -245,7 +245,8 @@ jobs:
             # multiple tests in one file)
             # -rA prints summary in the end
             # -n4 uses four processes to run tests via pytest-xdist
-            pipenv run pytest --junitxml=$TEST_OUTPUT/junit.xml --tb=short -s --verbose -rA $TEST_SELECTION $EXTRA_PARAMS
+            # -m "not remote" is used when we run benchmarks. Remote ones go to our self hosted github runner so exclude them here
+            pipenv run pytest --junitxml=$TEST_OUTPUT/junit.xml --tb=short -s --verbose -m "not remote" -rA $TEST_SELECTION $EXTRA_PARAMS
       - run:
           # CircleCI artifacts are preserved one file at a time, so skipping
           # this step isn't a good idea. If you want to extract the

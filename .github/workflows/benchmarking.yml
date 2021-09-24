@@ -1,0 +1,31 @@
+name: benchmarking
+
+on:
+  push:
+    branches: [ feature/more-performance-tests ] # TODO change to main after debugging
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.9
+
+    - name: Install pipenv & deps
+      run: |
+        pip install pipenv
+        pipenv install
+
+    # - name: Setup cluster
+    #   run: |
+    #     py
+
+
+    # - name: Test with pytest
+    #   run: |
+
+    #     pytest test_runner/performance/ -m "remote" --connstr "TODO" --skip-interfering-proc-check --out-dir perf_out
