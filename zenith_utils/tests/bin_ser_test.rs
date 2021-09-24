@@ -1,10 +1,10 @@
 use bytes::{Buf, BytesMut};
 use hex_literal::hex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::io::Read;
 use zenith_utils::bin_ser::LeSer;
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct HeaderData {
     magic: u16,
     info: u16,

@@ -111,7 +111,7 @@ impl Default for SafeKeeperState {
 // protocol messages
 
 /// Initial Proposer -> Acceptor message
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ProposerGreeting {
     /// proposer-acceptor protocol version
     pub protocol_version: u32,
@@ -128,19 +128,19 @@ pub struct ProposerGreeting {
 
 /// Acceptor -> Proposer initial response: the highest term known to me
 /// (acceptor voted for).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct AcceptorGreeting {
     term: u64,
 }
 
 /// Vote request sent from proposer to safekeepers
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct VoteRequest {
     term: Term,
 }
 
 /// Vote itself, sent from safekeeper to proposer
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct VoteResponse {
     term: Term,      // not really needed, just a sanity check
     vote_given: u64, // fixme u64 due to padding
@@ -152,12 +152,12 @@ pub struct VoteResponse {
 
 /// Request with WAL message sent from proposer to safekeeper. Along the way it
 /// announces 1) successful election (with epoch_start_lsn); 2) commit_lsn.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct AppendRequest {
     pub h: AppendRequestHeader,
     pub wal_data: Bytes,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AppendRequestHeader {
     pub term: Term,
     // LSN since the proposer appends WAL; determines epoch switch point.
@@ -175,7 +175,7 @@ pub struct AppendRequestHeader {
 }
 
 /// Report safekeeper state to proposer
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize)]
 pub struct AppendResponse {
     // Current term of the safekeeper; if it is higher than proposer's, the
     // compute is out of date.

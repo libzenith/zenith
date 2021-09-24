@@ -22,7 +22,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use lazy_static::lazy_static;
 use log::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
@@ -59,7 +59,7 @@ use postgres_ffi::XLogRecord;
 /// In Postgres `BufferTag` structure is used for exactly the same purpose.
 /// [See more related comments here](https://github.com/postgres/postgres/blob/99c5852e20a0987eca1c38ba0c09329d4076b6a0/src/include/storage/buf_internals.h#L91).
 ///
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize)]
 pub struct BufferTag {
     pub rel: RelTag,
     pub blknum: u32,

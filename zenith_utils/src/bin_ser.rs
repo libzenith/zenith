@@ -94,9 +94,12 @@ pub fn le_coder() -> impl Options {
 
 /// Binary serialize/deserialize helper functions (Big Endian)
 ///
-pub trait BeSer: Serialize + DeserializeOwned {
+pub trait BeSer {
     /// Serialize into a byte slice
-    fn ser_into_slice(&self, mut b: &mut [u8]) -> Result<(), SerializeError> {
+    fn ser_into_slice(&self, mut b: &mut [u8]) -> Result<(), SerializeError>
+    where
+        Self: Serialize,
+    {
         // &mut [u8] implements Write, but `ser_into` needs a mutable
         // reference to that. So we need the slightly awkward "mutable
         // reference to a mutable reference.
@@ -107,19 +110,28 @@ pub trait BeSer: Serialize + DeserializeOwned {
     ///
     /// This is useful for most `Write` types except `&mut [u8]`, which
     /// can more easily use [`ser_into_slice`](Self::ser_into_slice).
-    fn ser_into<W: Write>(&self, w: &mut W) -> Result<(), SerializeError> {
+    fn ser_into<W: Write>(&self, w: &mut W) -> Result<(), SerializeError>
+    where
+        Self: Serialize,
+    {
         be_coder().serialize_into(w, &self).map_err(|e| e.into())
     }
 
     /// Serialize into a new heap-allocated buffer
-    fn ser(&self) -> Result<Vec<u8>, SerializeError> {
+    fn ser(&self) -> Result<Vec<u8>, SerializeError>
+    where
+        Self: Serialize,
+    {
         be_coder().serialize(&self).map_err(|e| e.into())
     }
 
     /// Deserialize from the full contents of a byte slice
     ///
     /// See also: [`BeSer::des_prefix`]
-    fn des(buf: &[u8]) -> Result<Self, DeserializeError> {
+    fn des(buf: &[u8]) -> Result<Self, DeserializeError>
+    where
+        Self: DeserializeOwned,
+    {
         be_coder()
             .deserialize(buf)
             .or(Err(DeserializeError::BadInput))
@@ -131,7 +143,10 @@ pub trait BeSer: Serialize + DeserializeOwned {
     /// type, but does not guarantee that the entire slice is used.
     ///
     /// See also: [`BeSer::des`]
-    fn des_prefix(buf: &[u8]) -> Result<Self, DeserializeError> {
+    fn des_prefix(buf: &[u8]) -> Result<Self, DeserializeError>
+    where
+        Self: DeserializeOwned,
+    {
         be_coder()
             .allow_trailing_bytes()
             .deserialize(buf)
@@ -139,7 +154,10 @@ pub trait BeSer: Serialize + DeserializeOwned {
     }
 
     /// Deserialize from a reader
-    fn des_from<R: Read>(r: &mut R) -> Result<Self, DeserializeError> {
+    fn des_from<R: Read>(r: &mut R) -> Result<Self, DeserializeError>
+    where
+        Self: DeserializeOwned,
+    {
         be_coder().deserialize_from(r).map_err(|e| e.into())
     }
 
@@ -147,16 +165,22 @@ pub trait BeSer: Serialize + DeserializeOwned {
     ///
     /// Note: it may be faster to serialize to a buffer and then measure the
     /// buffer length, than to call `serialized_size` and then `ser_into`.
-    fn serialized_size(&self) -> Result<u64, SerializeError> {
+    fn serialized_size(&self) -> Result<u64, SerializeError>
+    where
+        Self: Serialize,
+    {
         be_coder().serialized_size(self).map_err(|e| e.into())
     }
 }
 
 /// Binary serialize/deserialize helper functions (Little Endian)
 ///
-pub trait LeSer: Serialize + DeserializeOwned {
+pub trait LeSer {
     /// Serialize into a byte slice
-    fn ser_into_slice(&self, mut b: &mut [u8]) -> Result<(), SerializeError> {
+    fn ser_into_slice(&self, mut b: &mut [u8]) -> Result<(), SerializeError>
+    where
+        Self: Serialize,
+    {
         // &mut [u8] implements Write, but `ser_into` needs a mutable
         // reference to that. So we need the slightly awkward "mutable
         // reference to a mutable reference.
@@ -167,19 +191,28 @@ pub trait LeSer: Serialize + DeserializeOwned {
     ///
     /// This is useful for most `Write` types except `&mut [u8]`, which
     /// can more easily use [`ser_into_slice`](Self::ser_into_slice).
-    fn ser_into<W: Write>(&self, w: &mut W) -> Result<(), SerializeError> {
+    fn ser_into<W: Write>(&self, w: &mut W) -> Result<(), SerializeError>
+    where
+        Self: Serialize,
+    {
         le_coder().serialize_into(w, &self).map_err(|e| e.into())
     }
 
     /// Serialize into a new heap-allocated buffer
-    fn ser(&self) -> Result<Vec<u8>, SerializeError> {
+    fn ser(&self) -> Result<Vec<u8>, SerializeError>
+    where
+        Self: Serialize,
+    {
         le_coder().serialize(&self).map_err(|e| e.into())
     }
 
     /// Deserialize from the full contents of a byte slice
     ///
     /// See also: [`LeSer::des_prefix`]
-    fn des(buf: &[u8]) -> Result<Self, DeserializeError> {
+    fn des(buf: &[u8]) -> Result<Self, DeserializeError>
+    where
+        Self: DeserializeOwned,
+    {
         le_coder()
             .deserialize(buf)
             .or(Err(DeserializeError::BadInput))
@@ -191,7 +224,10 @@ pub trait LeSer: Serialize + DeserializeOwned {
     /// type, but does not guarantee that the entire slice is used.
     ///
     /// See also: [`LeSer::des`]
-    fn des_prefix(buf: &[u8]) -> Result<Self, DeserializeError> {
+    fn des_prefix(buf: &[u8]) -> Result<Self, DeserializeError>
+    where
+        Self: DeserializeOwned,
+    {
         le_coder()
             .allow_trailing_bytes()
             .deserialize(buf)
@@ -199,7 +235,10 @@ pub trait LeSer: Serialize + DeserializeOwned {
     }
 
     /// Deserialize from a reader
-    fn des_from<R: Read>(r: &mut R) -> Result<Self, DeserializeError> {
+    fn des_from<R: Read>(r: &mut R) -> Result<Self, DeserializeError>
+    where
+        Self: DeserializeOwned,
+    {
         le_coder().deserialize_from(r).map_err(|e| e.into())
     }
 
@@ -207,14 +246,18 @@ pub trait LeSer: Serialize + DeserializeOwned {
     ///
     /// Note: it may be faster to serialize to a buffer and then measure the
     /// buffer length, than to call `serialized_size` and then `ser_into`.
-    fn serialized_size(&self) -> Result<u64, SerializeError> {
+    fn serialized_size(&self) -> Result<u64, SerializeError>
+    where
+        Self: Serialize,
+    {
         le_coder().serialized_size(self).map_err(|e| e.into())
     }
 }
 
-impl<T> BeSer for T where T: Serialize + DeserializeOwned {}
-
-impl<T> LeSer for T where T: Serialize + DeserializeOwned {}
+// Because usage of `BeSer` or `LeSer` can be done with *either* a Serialize or
+// DeserializeOwned implementation, the blanket implementation has to be for every type.
+impl<T> BeSer for T {}
+impl<T> LeSer for T {}
 
 #[cfg(test)]
 mod tests {
