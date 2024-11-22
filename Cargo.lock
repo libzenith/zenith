@@ -207,6 +207,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert-json-diff"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "async-channel"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2427,6 +2437,16 @@ dependencies = [
  "libc",
  "wasi 0.11.0+wasi-snapshot-preview1",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gettid"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "397256552fed4a9e577850498071831ec8f18ea83368aecc114cab469dcb43e5"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -4832,6 +4852,7 @@ dependencies = [
  "ahash",
  "anyhow",
  "arc-swap",
+ "assert-json-diff",
  "async-compression",
  "async-trait",
  "atomic-take",
@@ -4855,6 +4876,7 @@ dependencies = [
  "flate2",
  "framed-websockets",
  "futures",
+ "gettid",
  "hashbrown 0.14.5",
  "hashlink",
  "hex",
@@ -4877,6 +4899,7 @@ dependencies = [
  "measured",
  "metrics",
  "once_cell",
+ "opentelemetry",
  "p256 0.13.2",
  "parking_lot 0.12.1",
  "parquet",
@@ -4924,6 +4947,8 @@ dependencies = [
  "tokio-tungstenite 0.21.0",
  "tokio-util",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-serde",
  "tracing-subscriber",
  "tracing-utils",
  "try-lock",
