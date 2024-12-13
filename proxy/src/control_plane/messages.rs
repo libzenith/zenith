@@ -227,8 +227,8 @@ pub(crate) struct UserFacingMessage {
 pub(crate) struct GetEndpointAccessControl {
     pub(crate) role_secret: Box<str>,
     pub(crate) allowed_ips: Option<Vec<IpPattern>>,
+    pub(crate) allowed_vpc_endpoint_ids: Option<Vec<String>>,
     pub(crate) project_id: Option<ProjectIdInt>,
-    pub(crate) allowed_vpc_endpoint_ids: Option<Vec<EndpointIdInt>>,
 }
 
 /// Response which holds compute node's `host:port` pair.
@@ -282,6 +282,8 @@ pub(crate) struct DatabaseInfo {
     pub(crate) aux: MetricsAuxInfo,
     #[serde(default)]
     pub(crate) allowed_ips: Option<Vec<IpPattern>>,
+    #[serde(default)]
+    pub(crate) allowed_vpc_endpoint_ids: Option<Vec<String>>,
 }
 
 // Manually implement debug to omit sensitive info.
@@ -293,6 +295,7 @@ impl fmt::Debug for DatabaseInfo {
             .field("dbname", &self.dbname)
             .field("user", &self.user)
             .field("allowed_ips", &self.allowed_ips)
+            .field("allowed_vpc_endpoint_ids", &self.allowed_vpc_endpoint_ids)
             .finish_non_exhaustive()
     }
 }
@@ -457,7 +460,7 @@ mod tests {
 
     #[test]
     fn parse_get_role_secret() -> anyhow::Result<()> {
-        // Empty `allowed_ips` field.
+        // Empty `allowed_ips` and `allowed_vcp_endpoint_ids` field.
         let json = json!({
             "role_secret": "secret",
         });
@@ -469,7 +472,19 @@ mod tests {
         serde_json::from_str::<GetEndpointAccessControl>(&json.to_string())?;
         let json = json!({
             "role_secret": "secret",
+            "allowed_vpc_endpoint_ids": ["vpce-0abcd1234567890ef"],
+        });
+        serde_json::from_str::<GetRoleSecret>(&json.to_string())?;
+        let json = json!({
+            "role_secret": "secret",
             "allowed_ips": ["8.8.8.8"],
+            "allowed_vpc_endpoint_ids": ["vpce-0abcd1234567890ef"],
+        });
+        serde_json::from_str::<GetRoleSecret>(&json.to_string())?;
+        let json = json!({
+            "role_secret": "secret",
+            "allowed_ips": ["8.8.8.8"],
+            "allowed_vpc_endpoint_ids": ["vpce-0abcd1234567890ef"],
             "project_id": "project",
         });
         serde_json::from_str::<GetEndpointAccessControl>(&json.to_string())?;

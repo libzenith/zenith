@@ -51,6 +51,7 @@ impl<T> From<T> for Entry<T> {
 struct EndpointInfo {
     secret: std::collections::HashMap<RoleNameInt, Entry<Option<AuthSecret>>>,
     allowed_ips: Option<Entry<Arc<Vec<IpPattern>>>>,
+    allowed_vpc_endpoint_ids: Option<Entry<Arc<Vec<String>>>>,
 }
 
 impl EndpointInfo {
@@ -255,6 +256,19 @@ impl ProjectInfoCacheImpl {
         }
         self.insert_project2endpoint(project_id, endpoint_id);
         self.cache.entry(endpoint_id).or_default().allowed_ips = Some(allowed_ips.into());
+    }
+    pub(crate) fn insert_allowed_vpc_endpoint_ids(
+        &self,
+        project_id: ProjectIdInt,
+        endpoint_id: EndpointIdInt,
+        allowed_vpc_endpoint_ids: Arc<Vec<String>>,
+    ) {
+        if self.cache.len() >= self.config.size {
+            // If there are too many entries, wait until the next gc cycle.
+            return;
+        }
+        self.insert_project2endpoint(project_id, endpoint_id);
+        self.cache.entry(endpoint_id).or_default().allowed_vpc_endpoint_ids = Some(allowed_vpc_endpoint_ids.into());
     }
     fn insert_project2endpoint(&self, project_id: ProjectIdInt, endpoint_id: EndpointIdInt) {
         if let Some(mut endpoints) = self.project2ep.get_mut(&project_id) {

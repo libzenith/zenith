@@ -17,7 +17,7 @@ use crate::cache::project_info::ProjectInfoCacheImpl;
 use crate::config::{CacheOptions, EndpointCacheConfig, ProjectInfoCacheOptions};
 use crate::context::RequestContext;
 use crate::control_plane::{
-    errors, CachedAllowedIps, CachedNodeInfo, CachedRoleSecret, ControlPlaneApi, NodeInfoCache,
+    errors, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret, ControlPlaneApi, NodeInfoCache,
 };
 use crate::error::ReportableError;
 use crate::metrics::ApiLockMetrics;
@@ -59,7 +59,7 @@ impl ControlPlaneApi for ControlPlaneClient {
         &self,
         ctx: &RequestContext,
         user_info: &ComputeUserInfo,
-    ) -> Result<(CachedAllowedIps, Option<CachedRoleSecret>), errors::GetAuthInfoError> {
+    ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), errors::GetAuthInfoError> {
         match self {
             Self::ProxyV1(api) => api.get_allowed_ips_and_secret(ctx, user_info).await,
             #[cfg(any(test, feature = "testing"))]
@@ -104,7 +104,7 @@ pub(crate) trait TestControlPlaneClient: Send + Sync + 'static {
 
     fn get_allowed_ips_and_secret(
         &self,
-    ) -> Result<(CachedAllowedIps, Option<CachedRoleSecret>), errors::GetAuthInfoError>;
+    ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), errors::GetAuthInfoError>;
 
     fn dyn_clone(&self) -> Box<dyn TestControlPlaneClient>;
 }

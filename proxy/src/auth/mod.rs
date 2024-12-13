@@ -69,6 +69,12 @@ pub(crate) enum AuthError {
     )]
     IpAddressNotAllowed(IpAddr),
 
+    #[error(
+        "This VPC endpoint id {0} is not allowed to connect to this endpoint. \
+        Please add it to the allowed list in the Neon console."
+    )]
+    VpcEndpointIdNotAllowed(String),
+
     #[error("Too many connections to this endpoint. Please try again later.")]
     TooManyConnections,
 
@@ -93,6 +99,10 @@ impl AuthError {
 
     pub(crate) fn ip_address_not_allowed(ip: IpAddr) -> Self {
         AuthError::IpAddressNotAllowed(ip)
+    }
+
+    pub(crate) fn vpc_endpoint_id_not_allowed(id: String) -> Self {
+        AuthError::VpcEndpointIdNotAllowed(id)
     }
 
     pub(crate) fn too_many_connections() -> Self {
@@ -124,6 +134,7 @@ impl UserFacingError for AuthError {
             Self::MissingEndpointName => self.to_string(),
             Self::Io(_) => "Internal error".to_string(),
             Self::IpAddressNotAllowed(_) => self.to_string(),
+            Self::VpcEndpointIdNotAllowed(_) => self.to_string(),
             Self::TooManyConnections => self.to_string(),
             Self::UserTimeout(_) => self.to_string(),
             Self::ConfirmationTimeout(_) => self.to_string(),
@@ -144,6 +155,7 @@ impl ReportableError for AuthError {
             Self::MissingEndpointName => crate::error::ErrorKind::User,
             Self::Io(_) => crate::error::ErrorKind::ClientDisconnect,
             Self::IpAddressNotAllowed(_) => crate::error::ErrorKind::User,
+            Self::VpcEndpointIdNotAllowed(_) => crate::error::ErrorKind::User,
             Self::TooManyConnections => crate::error::ErrorKind::RateLimit,
             Self::UserTimeout(_) => crate::error::ErrorKind::User,
             Self::ConfirmationTimeout(_) => crate::error::ErrorKind::User,

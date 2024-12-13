@@ -52,6 +52,8 @@ pub(crate) struct AuthInfo {
     pub(crate) secret: Option<AuthSecret>,
     /// List of IP addresses allowed for the autorization.
     pub(crate) allowed_ips: Vec<IpPattern>,
+    /// List of VPC endpoints allowed for the autorization.
+    pub(crate) allowed_vpc_endpoint_ids:  Vec<String>,
     /// Project ID. This is used for cache invalidation.
     pub(crate) project_id: Option<ProjectIdInt>,
 }
@@ -100,6 +102,7 @@ pub(crate) type NodeInfoCache =
 pub(crate) type CachedNodeInfo = Cached<&'static NodeInfoCache, NodeInfo>;
 pub(crate) type CachedRoleSecret = Cached<&'static ProjectInfoCacheImpl, Option<AuthSecret>>;
 pub(crate) type CachedAllowedIps = Cached<&'static ProjectInfoCacheImpl, Arc<Vec<IpPattern>>>;
+pub(crate) type CachedAllowedVpcEndpointIds = Cached<&'static ProjectInfoCacheImpl, Arc<Vec<String>>>;
 
 /// This will allocate per each call, but the http requests alone
 /// already require a few allocations, so it should be fine.
@@ -113,11 +116,12 @@ pub(crate) trait ControlPlaneApi {
         user_info: &ComputeUserInfo,
     ) -> Result<CachedRoleSecret, errors::GetAuthInfoError>;
 
+    // TODO: Should we rename this one? It does more...
     async fn get_allowed_ips_and_secret(
         &self,
         ctx: &RequestContext,
         user_info: &ComputeUserInfo,
-    ) -> Result<(CachedAllowedIps, Option<CachedRoleSecret>), errors::GetAuthInfoError>;
+    ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), errors::GetAuthInfoError>;
 
     async fn get_endpoint_jwks(
         &self,

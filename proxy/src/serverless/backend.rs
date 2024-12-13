@@ -30,6 +30,7 @@ use crate::control_plane::locks::ApiLocks;
 use crate::control_plane::CachedNodeInfo;
 use crate::error::{ErrorKind, ReportableError, UserFacingError};
 use crate::intern::EndpointIdInt;
+use crate::protocol2::ConnectionInfoExtra;
 use crate::proxy::connect_compute::ConnectMechanism;
 use crate::proxy::retry::{CouldRetry, ShouldRetryWakeCompute};
 use crate::rate_limiter::EndpointRateLimiter;
@@ -57,7 +58,26 @@ impl PoolingBackend {
 
         let user_info = user_info.clone();
         let backend = self.auth_backend.as_ref().map(|()| user_info.clone());
-        let (allowed_ips, maybe_secret) = backend.get_allowed_ips_and_secret(ctx).await?;
+        let (allowed_ips, allowed_vpce_ids, maybe_secret) =
+            backend.get_allowed_ips_and_secret(ctx).await?;
+
+        let extra = ctx.extra();
+        let incoming_endpoint_id = match extra {
+            None => "".to_string(),
+            Some(ConnectionInfoExtra::Aws { vpce_id }) => {
+                // Convert the vcpe_id to a string
+                match String::from_utf8(vpce_id.to_vec()) {
+                    Ok(s) => s,
+                    Err(_e) => "".to_string(),
+                }
+            }
+            Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
+        };
+
+        if incoming_endpoint_id != "" && !allowed_vpce_ids.contains(&incoming_endpoint_id) {
+            return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
+        }
+
         if self.config.authentication_config.ip_allowlist_check_enabled
             && !check_peer_addr_is_in_list(&ctx.peer_addr(), &allowed_ips)
         {

@@ -22,7 +22,7 @@ use crate::control_plane::errors::{
 use crate::control_plane::locks::ApiLocks;
 use crate::control_plane::messages::{ColdStartInfo, EndpointJwksResponse, Reason};
 use crate::control_plane::{
-    AuthInfo, AuthSecret, CachedAllowedIps, CachedNodeInfo, CachedRoleSecret, NodeInfo,
+    AuthInfo, AuthSecret, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret, NodeInfo,
 };
 use crate::metrics::{CacheOutcome, Metrics};
 use crate::rate_limiter::WakeComputeRateLimiter;
@@ -137,9 +137,6 @@ impl NeonControlPlaneClient {
                 }
             };
 
-            // Ivan: don't know where it will be used, so I leave it here
-            let _endpoint_vpc_ids = body.allowed_vpc_endpoint_ids.unwrap_or_default();
-
             let secret = if body.role_secret.is_empty() {
                 None
             } else {
@@ -153,9 +150,12 @@ impl NeonControlPlaneClient {
                 .proxy
                 .allowed_ips_number
                 .observe(allowed_ips.len() as f64);
+            let allowed_vpc_endpoint_ids = body.allowed_vpc_endpoint_ids.unwrap_or_default();
+            // TODO: Add metrics?
             Ok(AuthInfo {
                 secret,
                 allowed_ips,
+                allowed_vpc_endpoint_ids,
                 project_id: body.project_id,
             })
         }
@@ -312,6 +312,11 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
                 normalized_ep_int,
                 Arc::new(auth_info.allowed_ips),
             );
+            self.caches.project_info.insert_allowed_vpc_endpoint_ids(
+                project_id,
+                normalized_ep_int,
+                Arc::new(auth_info.allowed_vpc_endpoint_ids),
+            );
             ctx.set_project_id(project_id);
         }
         // When we just got a secret, we don't need to invalidate it.
@@ -322,14 +327,16 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
         &self,
         ctx: &RequestContext,
         user_info: &ComputeUserInfo,
-    ) -> Result<(CachedAllowedIps, Option<CachedRoleSecret>), GetAuthInfoError> {
+    ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), GetAuthInfoError> {
         let normalized_ep = &user_info.endpoint.normalize();
+        let allowed_vcp_endpoint_ids = Arc::new(Vec::new());
         if let Some(allowed_ips) = self.caches.project_info.get_allowed_ips(normalized_ep) {
             Metrics::get()
                 .proxy
                 .allowed_ips_cache_misses
                 .inc(CacheOutcome::Hit);
-            return Ok((allowed_ips, None));
+            // TODO
+            return Ok((allowed_ips, Cached::new_uncached(allowed_vcp_endpoint_ids), None));
         }
         Metrics::get()
             .proxy
@@ -337,6 +344,7 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
             .inc(CacheOutcome::Miss);
         let auth_info = self.do_get_auth_info(ctx, user_info).await?;
         let allowed_ips = Arc::new(auth_info.allowed_ips);
+        let allowed_vcp_endpoint_ids = Arc::new(auth_info.allowed_vpc_endpoint_ids);
         let user = &user_info.user;
         if let Some(project_id) = auth_info.project_id {
             let normalized_ep_int = normalized_ep.into();
@@ -351,10 +359,16 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
                 normalized_ep_int,
                 allowed_ips.clone(),
             );
+            self.caches.project_info.insert_allowed_vpc_endpoint_ids(
+                project_id,
+                normalized_ep_int,
+                allowed_vcp_endpoint_ids.clone(),
+            );
             ctx.set_project_id(project_id);
         }
         Ok((
             Cached::new_uncached(allowed_ips),
+            Cached::new_uncached(allowed_vcp_endpoint_ids),
             Some(Cached::new_uncached(auth_info.secret)),
         ))
     }
