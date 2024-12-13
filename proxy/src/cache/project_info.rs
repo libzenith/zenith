@@ -93,8 +93,26 @@ impl EndpointInfo {
         }
         None
     }
+    pub(crate) fn get_allowed_vpc_endpoint_ids(
+        &self,
+        valid_since: Instant,
+        ignore_cache_since: Option<Instant>,
+    ) -> Option<(Arc<Vec<String>>, bool)> {
+        if let Some(allowed_vpc_endpoint_ids) = &self.allowed_vpc_endpoint_ids {
+            if valid_since < allowed_vpc_endpoint_ids.created_at {
+                return Some((
+                    allowed_vpc_endpoint_ids.value.clone(),
+                    Self::check_ignore_cache(ignore_cache_since, allowed_vpc_endpoint_ids.created_at),
+                ));
+            }
+        }
+        None
+    }
     pub(crate) fn invalidate_allowed_ips(&mut self) {
         self.allowed_ips = None;
+    }
+    pub(crate) fn invalidate_allowed_vpc_endpoint_ids(&mut self) {
+        self.allowed_vpc_endpoint_ids = None;
     }
     pub(crate) fn invalidate_role_secret(&mut self, role_name: RoleNameInt) {
         self.secret.remove(&role_name);
@@ -227,6 +245,24 @@ impl ProjectInfoCacheImpl {
         }
         Some(Cached::new_uncached(value))
     }
+    pub(crate) fn get_allowed_vpc_endpoint_ids(
+        &self,
+        endpoint_id: &EndpointId,
+    ) -> Option<Cached<&Self, Arc<Vec<String>>>> {
+        let endpoint_id = EndpointIdInt::get(endpoint_id)?;
+        let (valid_since, ignore_cache_since) = self.get_cache_times();
+        let endpoint_info = self.cache.get(&endpoint_id)?;
+        let value = endpoint_info.get_allowed_vpc_endpoint_ids(valid_since, ignore_cache_since);
+        let (value, ignore_cache) = value?;
+        if !ignore_cache {
+            let cached = Cached {
+                token: Some((self, CachedLookupInfo::new_allowed_vpc_endpoint_ids(endpoint_id))),
+                value,
+            };
+            return Some(cached);
+        }
+        Some(Cached::new_uncached(value))
+    }
     pub(crate) fn insert_role_secret(
         &self,
         project_id: ProjectIdInt,
@@ -348,11 +384,18 @@ impl CachedLookupInfo {
             lookup_type: LookupType::AllowedIps,
         }
     }
+    pub(self) fn new_allowed_vpc_endpoint_ids(endpoint_id: EndpointIdInt) -> Self {
+        Self {
+            endpoint_id,
+            lookup_type: LookupType::AllowedVpcEndpointIds,
+        }
+    }
 }
 
 enum LookupType {
     RoleSecret(RoleNameInt),
     AllowedIps,
+    AllowedVpcEndpointIds
 }
 
 impl Cache for ProjectInfoCacheImpl {
@@ -372,6 +415,11 @@ impl Cache for ProjectInfoCacheImpl {
             LookupType::AllowedIps => {
                 if let Some(mut endpoint_info) = self.cache.get_mut(&key.endpoint_id) {
                     endpoint_info.invalidate_allowed_ips();
+                }
+            }
+            LookupType::AllowedVpcEndpointIds => {
+                if let Some(mut endpoint_info) = self.cache.get_mut(&key.endpoint_id) {
+                    endpoint_info.invalidate_allowed_vpc_endpoint_ids();
                 }
             }
         }

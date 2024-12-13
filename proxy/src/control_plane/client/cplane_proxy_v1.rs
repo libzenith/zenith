@@ -329,14 +329,15 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
         user_info: &ComputeUserInfo,
     ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), GetAuthInfoError> {
         let normalized_ep = &user_info.endpoint.normalize();
-        let allowed_vcp_endpoint_ids = Arc::new(Vec::new());
         if let Some(allowed_ips) = self.caches.project_info.get_allowed_ips(normalized_ep) {
-            Metrics::get()
-                .proxy
-                .allowed_ips_cache_misses
-                .inc(CacheOutcome::Hit);
-            // TODO
-            return Ok((allowed_ips, Cached::new_uncached(allowed_vcp_endpoint_ids), None));
+            if let Some(allowed_vcp_endpoint_ids) = self.caches.project_info.get_allowed_vpc_endpoint_ids(normalized_ep) {
+                Metrics::get()
+                    .proxy
+                    .allowed_ips_cache_misses // TODO SR: Should we rename this variable to something like allowed_ip_cache_stats?
+                    .inc(CacheOutcome::Hit);
+                // TODO SR: This I don't understand this. Why are we returning an empty secret here?
+                return Ok((allowed_ips, allowed_vcp_endpoint_ids, None));
+            }
         }
         Metrics::get()
             .proxy
