@@ -13,7 +13,9 @@ use crate::auth::backend::ComputeUserInfo;
 use crate::auth::IpPattern;
 use crate::cache::Cached;
 use crate::context::RequestContext;
-use crate::control_plane::client::{CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedRoleSecret};
+use crate::control_plane::client::{
+    CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedRoleSecret,
+};
 use crate::control_plane::errors::{
     ControlPlaneError, GetAuthInfoError, GetEndpointJwksError, WakeComputeError,
 };
@@ -221,23 +223,21 @@ impl super::ControlPlaneApi for MockControlPlane {
         _ctx: &RequestContext,
         user_info: &ComputeUserInfo,
     ) -> Result<CachedAllowedIps, GetAuthInfoError> {
-        Ok(
-            Cached::new_uncached(Arc::new(
-                self.do_get_auth_info(user_info).await?.allowed_ips,
-            ))
-        )
+        Ok(Cached::new_uncached(Arc::new(
+            self.do_get_auth_info(user_info).await?.allowed_ips,
+        )))
     }
 
     async fn get_allowed_vpc_endpoint_ids(
-            &self,
-            _ctx: &RequestContext,
-            user_info: &ComputeUserInfo,
-        ) -> Result<CachedAllowedVpcEndpointIds, super::errors::GetAuthInfoError> {
-        Ok(
-            Cached::new_uncached(Arc::new(
-                self.do_get_auth_info(user_info).await?.allowed_vpc_endpoint_ids,
-            )),
-        )
+        &self,
+        _ctx: &RequestContext,
+        user_info: &ComputeUserInfo,
+    ) -> Result<CachedAllowedVpcEndpointIds, super::errors::GetAuthInfoError> {
+        Ok(Cached::new_uncached(Arc::new(
+            self.do_get_auth_info(user_info)
+                .await?
+                .allowed_vpc_endpoint_ids,
+        )))
     }
 
     async fn get_endpoint_jwks(

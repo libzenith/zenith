@@ -22,7 +22,8 @@ use crate::control_plane::errors::{
 use crate::control_plane::locks::ApiLocks;
 use crate::control_plane::messages::{ColdStartInfo, EndpointJwksResponse, Reason};
 use crate::control_plane::{
-    AuthInfo, AuthSecret, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret, NodeInfo,
+    AuthInfo, AuthSecret, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo,
+    CachedRoleSecret, NodeInfo,
 };
 use crate::metrics::{CacheOutcome, Metrics};
 use crate::rate_limiter::WakeComputeRateLimiter;
@@ -376,7 +377,11 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
         user_info: &ComputeUserInfo,
     ) -> Result<CachedAllowedVpcEndpointIds, GetAuthInfoError> {
         let normalized_ep = &user_info.endpoint.normalize();
-        if let Some(allowed_vcp_endpoint_ids) = self.caches.project_info.get_allowed_vpc_endpoint_ids(normalized_ep) {
+        if let Some(allowed_vcp_endpoint_ids) = self
+            .caches
+            .project_info
+            .get_allowed_vpc_endpoint_ids(normalized_ep)
+        {
             Metrics::get()
                 .proxy
                 .vpc_endpoint_id_cache_stats

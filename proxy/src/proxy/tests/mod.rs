@@ -526,18 +526,14 @@ impl TestControlPlaneClient for TestConnectMechanism {
         }
     }
 
-    fn get_allowed_ips(
-        &self,
-    ) -> Result<CachedAllowedIps, control_plane::errors::GetAuthInfoError>
-    {
+    fn get_allowed_ips(&self) -> Result<CachedAllowedIps, control_plane::errors::GetAuthInfoError> {
         unimplemented!("not used in tests")
     }
 
     fn get_allowed_vpc_endpoint_ids(
-            &self,
-        ) -> Result<CachedAllowedVpcEndpointIds, control_plane::errors::GetAuthInfoError> {
-            unimplemented!("not used in tests")
-        
+        &self,
+    ) -> Result<CachedAllowedVpcEndpointIds, control_plane::errors::GetAuthInfoError> {
+        unimplemented!("not used in tests")
     }
 
     fn dyn_clone(&self) -> Box<dyn TestControlPlaneClient> {

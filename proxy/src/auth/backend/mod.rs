@@ -311,7 +311,9 @@ async fn auth_quirks(
     if incoming_endpoint_id != "" {
         let allowed_vpc_endpoint_ids = api.get_allowed_vpc_endpoint_ids(ctx, &info).await?;
         // TODO: For now an empty VPC endpoint ID list means all are allowed. We should replace that.
-        if !allowed_vpc_endpoint_ids.is_empty() && !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id) {
+        if !allowed_vpc_endpoint_ids.is_empty()
+            && !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id)
+        {
             return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
         }
     }
@@ -466,12 +468,8 @@ impl Backend<'_, ComputeUserInfo> {
         ctx: &RequestContext,
     ) -> Result<CachedAllowedIps, GetAuthInfoError> {
         match self {
-            Self::ControlPlane(api, user_info) => {
-                api.get_allowed_ips(ctx, user_info).await
-            }
-            Self::Local(_) => Ok(
-                Cached::new_uncached(Arc::new(vec![])),
-            ),
+            Self::ControlPlane(api, user_info) => api.get_allowed_ips(ctx, user_info).await,
+            Self::Local(_) => Ok(Cached::new_uncached(Arc::new(vec![]))),
         }
     }
 
@@ -483,9 +481,7 @@ impl Backend<'_, ComputeUserInfo> {
             Self::ControlPlane(api, user_info) => {
                 api.get_allowed_vpc_endpoint_ids(ctx, user_info).await
             }
-            Self::Local(_) => Ok(
-                Cached::new_uncached(Arc::new(vec![])),
-            ),
+            Self::Local(_) => Ok(Cached::new_uncached(Arc::new(vec![]))),
         }
     }
 }
@@ -588,7 +584,9 @@ mod tests {
             _ctx: &RequestContext,
             _user_info: &super::ComputeUserInfo,
         ) -> Result<CachedAllowedVpcEndpointIds, control_plane::errors::GetAuthInfoError> {
-            Ok(CachedAllowedVpcEndpointIds::new_uncached(Arc::new(self.vpc_endpoint_ids.clone())))
+            Ok(CachedAllowedVpcEndpointIds::new_uncached(Arc::new(
+                self.vpc_endpoint_ids.clone(),
+            )))
         }
 
         async fn get_endpoint_jwks(

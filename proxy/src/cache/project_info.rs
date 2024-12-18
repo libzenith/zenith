@@ -102,7 +102,10 @@ impl EndpointInfo {
             if valid_since < allowed_vpc_endpoint_ids.created_at {
                 return Some((
                     allowed_vpc_endpoint_ids.value.clone(),
-                    Self::check_ignore_cache(ignore_cache_since, allowed_vpc_endpoint_ids.created_at),
+                    Self::check_ignore_cache(
+                        ignore_cache_since,
+                        allowed_vpc_endpoint_ids.created_at,
+                    ),
                 ));
             }
         }
@@ -256,7 +259,10 @@ impl ProjectInfoCacheImpl {
         let (value, ignore_cache) = value?;
         if !ignore_cache {
             let cached = Cached {
-                token: Some((self, CachedLookupInfo::new_allowed_vpc_endpoint_ids(endpoint_id))),
+                token: Some((
+                    self,
+                    CachedLookupInfo::new_allowed_vpc_endpoint_ids(endpoint_id),
+                )),
                 value,
             };
             return Some(cached);
@@ -304,7 +310,10 @@ impl ProjectInfoCacheImpl {
             return;
         }
         self.insert_project2endpoint(project_id, endpoint_id);
-        self.cache.entry(endpoint_id).or_default().allowed_vpc_endpoint_ids = Some(allowed_vpc_endpoint_ids.into());
+        self.cache
+            .entry(endpoint_id)
+            .or_default()
+            .allowed_vpc_endpoint_ids = Some(allowed_vpc_endpoint_ids.into());
     }
     fn insert_project2endpoint(&self, project_id: ProjectIdInt, endpoint_id: EndpointIdInt) {
         if let Some(mut endpoints) = self.project2ep.get_mut(&project_id) {
@@ -395,7 +404,7 @@ impl CachedLookupInfo {
 enum LookupType {
     RoleSecret(RoleNameInt),
     AllowedIps,
-    AllowedVpcEndpointIds
+    AllowedVpcEndpointIds,
 }
 
 impl Cache for ProjectInfoCacheImpl {

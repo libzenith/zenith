@@ -17,7 +17,8 @@ use crate::cache::project_info::ProjectInfoCacheImpl;
 use crate::config::{CacheOptions, EndpointCacheConfig, ProjectInfoCacheOptions};
 use crate::context::RequestContext;
 use crate::control_plane::{
-    errors, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret, ControlPlaneApi, NodeInfoCache,
+    errors, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret,
+    ControlPlaneApi, NodeInfoCache,
 };
 use crate::error::ReportableError;
 use crate::metrics::ApiLockMetrics;
@@ -116,9 +117,7 @@ impl ControlPlaneApi for ControlPlaneClient {
 pub(crate) trait TestControlPlaneClient: Send + Sync + 'static {
     fn wake_compute(&self) -> Result<CachedNodeInfo, errors::WakeComputeError>;
 
-    fn get_allowed_ips(
-        &self,
-    ) -> Result<CachedAllowedIps, errors::GetAuthInfoError>;
+    fn get_allowed_ips(&self) -> Result<CachedAllowedIps, errors::GetAuthInfoError>;
 
     fn get_allowed_vpc_endpoint_ids(
         &self,
