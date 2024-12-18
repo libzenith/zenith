@@ -310,7 +310,8 @@ async fn auth_quirks(
     };
     if incoming_endpoint_id != "" {
         let allowed_vpc_endpoint_ids = api.get_allowed_vpc_endpoint_ids(ctx, &info).await?;
-        if !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id) {
+        // TODO: For now an empty VPC endpoint ID list means all are allowed. We should replace that.
+        if !allowed_vpc_endpoint_ids.is_empty() && !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id) {
             return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
         }
     }
