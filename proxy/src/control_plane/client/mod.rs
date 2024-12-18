@@ -55,17 +55,31 @@ impl ControlPlaneApi for ControlPlaneClient {
         }
     }
 
-    async fn get_allowed_ips_and_secret(
+    async fn get_allowed_ips(
         &self,
         ctx: &RequestContext,
         user_info: &ComputeUserInfo,
-    ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), errors::GetAuthInfoError> {
+    ) -> Result<CachedAllowedIps, errors::GetAuthInfoError> {
         match self {
-            Self::ProxyV1(api) => api.get_allowed_ips_and_secret(ctx, user_info).await,
+            Self::ProxyV1(api) => api.get_allowed_ips(ctx, user_info).await,
             #[cfg(any(test, feature = "testing"))]
-            Self::PostgresMock(api) => api.get_allowed_ips_and_secret(ctx, user_info).await,
+            Self::PostgresMock(api) => api.get_allowed_ips(ctx, user_info).await,
             #[cfg(test)]
-            Self::Test(api) => api.get_allowed_ips_and_secret(),
+            Self::Test(api) => api.get_allowed_ips(),
+        }
+    }
+
+    async fn get_allowed_vpc_endpoint_ids(
+        &self,
+        ctx: &RequestContext,
+        user_info: &ComputeUserInfo,
+    ) -> Result<CachedAllowedVpcEndpointIds, errors::GetAuthInfoError> {
+        match self {
+            Self::ProxyV1(api) => api.get_allowed_vpc_endpoint_ids(ctx, user_info).await,
+            #[cfg(any(test, feature = "testing"))]
+            Self::PostgresMock(api) => api.get_allowed_vpc_endpoint_ids(ctx, user_info).await,
+            #[cfg(test)]
+            Self::Test(api) => api.get_allowed_vpc_endpoint_ids(),
         }
     }
 
@@ -102,9 +116,13 @@ impl ControlPlaneApi for ControlPlaneClient {
 pub(crate) trait TestControlPlaneClient: Send + Sync + 'static {
     fn wake_compute(&self) -> Result<CachedNodeInfo, errors::WakeComputeError>;
 
-    fn get_allowed_ips_and_secret(
+    fn get_allowed_ips(
         &self,
-    ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), errors::GetAuthInfoError>;
+    ) -> Result<CachedAllowedIps, errors::GetAuthInfoError>;
+
+    fn get_allowed_vpc_endpoint_ids(
+        &self,
+    ) -> Result<CachedAllowedVpcEndpointIds, errors::GetAuthInfoError>;
 
     fn dyn_clone(&self) -> Box<dyn TestControlPlaneClient>;
 }

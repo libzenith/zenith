@@ -284,9 +284,8 @@ async fn auth_quirks(
         Ok(info) => (info, None),
     };
 
-    debug!("fetching user's authentication info");
-    let (allowed_ips, allowed_vpc_endpoint_ids, maybe_secret) =
-        api.get_allowed_ips_and_secret(ctx, &info).await?;
+    debug!("fetching authentication info and allowlists");
+    let allowed_ips = api.get_allowed_ips(ctx, &info).await?;
 
     // check allowed list
     if config.ip_allowlist_check_enabled
@@ -309,17 +308,17 @@ async fn auth_quirks(
         }
         Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
     };
-    if incoming_endpoint_id != "" && !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id) {
-        return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
+    if incoming_endpoint_id != "" {
+        let allowed_vpc_endpoint_ids = api.get_allowed_vpc_endpoint_ids(ctx, &info).await?;
+        if !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id) {
+            return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
+        }
     }
 
     if !endpoint_rate_limiter.check(info.endpoint.clone().into(), 1) {
         return Err(AuthError::too_many_connections());
     }
-    let cached_secret = match maybe_secret {
-        Some(secret) => secret,
-        None => api.get_role_secret(ctx, &info).await?,
-    };
+    let cached_secret = api.get_role_secret(ctx, &info).await?;
     let (cached_entry, secret) = cached_secret.take_value();
 
     let secret = if let Some(secret) = secret {
@@ -461,26 +460,31 @@ impl Backend<'_, ComputeUserInfo> {
         }
     }
 
-    pub(crate) async fn get_allowed_ips_and_secret(
+    pub(crate) async fn get_allowed_ips(
         &self,
         ctx: &RequestContext,
-    ) -> Result<
-        (
-            CachedAllowedIps,
-            CachedAllowedVpcEndpointIds,
-            Option<CachedRoleSecret>,
-        ),
-        GetAuthInfoError,
-    > {
+    ) -> Result<CachedAllowedIps, GetAuthInfoError> {
         match self {
             Self::ControlPlane(api, user_info) => {
-                api.get_allowed_ips_and_secret(ctx, user_info).await
+                api.get_allowed_ips(ctx, user_info).await
             }
-            Self::Local(_) => Ok((
+            Self::Local(_) => Ok(
                 Cached::new_uncached(Arc::new(vec![])),
+            ),
+        }
+    }
+
+    pub(crate) async fn get_allowed_vpc_endpoint_ids(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<CachedAllowedVpcEndpointIds, GetAuthInfoError> {
+        match self {
+            Self::ControlPlane(api, user_info) => {
+                api.get_allowed_vpc_endpoint_ids(ctx, user_info).await
+            }
+            Self::Local(_) => Ok(
                 Cached::new_uncached(Arc::new(vec![])),
-                None,
-            )),
+            ),
         }
     }
 }
@@ -570,23 +574,20 @@ mod tests {
             Ok(CachedRoleSecret::new_uncached(Some(self.secret.clone())))
         }
 
-        async fn get_allowed_ips_and_secret(
+        async fn get_allowed_ips(
             &self,
             _ctx: &RequestContext,
             _user_info: &super::ComputeUserInfo,
-        ) -> Result<
-            (
-                CachedAllowedIps,
-                CachedAllowedVpcEndpointIds,
-                Option<CachedRoleSecret>,
-            ),
-            control_plane::errors::GetAuthInfoError,
-        > {
-            Ok((
-                CachedAllowedIps::new_uncached(Arc::new(self.ips.clone())),
-                CachedAllowedVpcEndpointIds::new_uncached(Arc::new(self.vpc_endpoint_ids.clone())),
-                Some(CachedRoleSecret::new_uncached(Some(self.secret.clone()))),
-            ))
+        ) -> Result<CachedAllowedIps, control_plane::errors::GetAuthInfoError> {
+            Ok(CachedAllowedIps::new_uncached(Arc::new(self.ips.clone())))
+        }
+
+        async fn get_allowed_vpc_endpoint_ids(
+            &self,
+            _ctx: &RequestContext,
+            _user_info: &super::ComputeUserInfo,
+        ) -> Result<CachedAllowedVpcEndpointIds, control_plane::errors::GetAuthInfoError> {
+            Ok(CachedAllowedVpcEndpointIds::new_uncached(Arc::new(self.vpc_endpoint_ids.clone())))
         }
 
         async fn get_endpoint_jwks(

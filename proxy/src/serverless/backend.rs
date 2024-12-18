@@ -58,8 +58,7 @@ impl PoolingBackend {
 
         let user_info = user_info.clone();
         let backend = self.auth_backend.as_ref().map(|()| user_info.clone());
-        let (allowed_ips, allowed_vpce_ids, maybe_secret) =
-            backend.get_allowed_ips_and_secret(ctx).await?;
+        let allowed_ips = backend.get_allowed_ips(ctx).await?;
 
         let extra = ctx.extra();
         let incoming_endpoint_id = match extra {
@@ -74,26 +73,25 @@ impl PoolingBackend {
             Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
         };
 
-        if incoming_endpoint_id != "" && !allowed_vpce_ids.contains(&incoming_endpoint_id) {
-            return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
-        }
-
         if self.config.authentication_config.ip_allowlist_check_enabled
             && !check_peer_addr_is_in_list(&ctx.peer_addr(), &allowed_ips)
         {
             return Err(AuthError::ip_address_not_allowed(ctx.peer_addr()));
         }
+        if incoming_endpoint_id != "" {
+            let allowed_vcp_endpoint_ids = backend.get_allowed_vpc_endpoint_ids(ctx).await?;
+            if !allowed_vcp_endpoint_ids.contains(&incoming_endpoint_id) {
+                return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
+            }
+        }
+
         if !self
             .endpoint_rate_limiter
             .check(user_info.endpoint.clone().into(), 1)
         {
             return Err(AuthError::too_many_connections());
         }
-        let cached_secret = match maybe_secret {
-            Some(secret) => secret,
-            None => backend.get_role_secret(ctx).await?,
-        };
-
+        let cached_secret = backend.get_role_secret(ctx).await?;
         let secret = match cached_secret.value.clone() {
             Some(secret) => self.config.authentication_config.check_rate_limit(
                 ctx,

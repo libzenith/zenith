@@ -116,12 +116,17 @@ pub(crate) trait ControlPlaneApi {
         user_info: &ComputeUserInfo,
     ) -> Result<CachedRoleSecret, errors::GetAuthInfoError>;
 
-    // TODO: Should we rename this one? It does more...
-    async fn get_allowed_ips_and_secret(
+    async fn get_allowed_ips(
         &self,
         ctx: &RequestContext,
         user_info: &ComputeUserInfo,
-    ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), errors::GetAuthInfoError>;
+    ) -> Result<CachedAllowedIps, errors::GetAuthInfoError>;
+
+    async fn get_allowed_vpc_endpoint_ids(
+        &self,
+        ctx: &RequestContext,
+        user_info: &ComputeUserInfo,
+    ) -> Result<CachedAllowedVpcEndpointIds, errors::GetAuthInfoError>;
 
     async fn get_endpoint_jwks(
         &self,

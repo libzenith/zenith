@@ -323,21 +323,18 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
         Ok(Cached::new_uncached(auth_info.secret))
     }
 
-    async fn get_allowed_ips_and_secret(
+    async fn get_allowed_ips(
         &self,
         ctx: &RequestContext,
         user_info: &ComputeUserInfo,
-    ) -> Result<(CachedAllowedIps, CachedAllowedVpcEndpointIds, Option<CachedRoleSecret>), GetAuthInfoError> {
+    ) -> Result<CachedAllowedIps, GetAuthInfoError> {
         let normalized_ep = &user_info.endpoint.normalize();
         if let Some(allowed_ips) = self.caches.project_info.get_allowed_ips(normalized_ep) {
-            if let Some(allowed_vcp_endpoint_ids) = self.caches.project_info.get_allowed_vpc_endpoint_ids(normalized_ep) {
-                Metrics::get()
-                    .proxy
-                    .allowed_ips_cache_misses // TODO SR: Should we rename this variable to something like allowed_ip_cache_stats?
-                    .inc(CacheOutcome::Hit);
-                // TODO SR: This I don't understand this. Why are we returning an empty secret here?
-                return Ok((allowed_ips, allowed_vcp_endpoint_ids, None));
-            }
+            Metrics::get()
+                .proxy
+                .allowed_ips_cache_misses // TODO SR: Should we rename this variable to something like allowed_ip_cache_stats?
+                .inc(CacheOutcome::Hit);
+            return Ok(allowed_ips);
         }
         Metrics::get()
             .proxy
@@ -367,11 +364,53 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
             );
             ctx.set_project_id(project_id);
         }
-        Ok((
-            Cached::new_uncached(allowed_ips),
-            Cached::new_uncached(allowed_vcp_endpoint_ids),
-            Some(Cached::new_uncached(auth_info.secret)),
-        ))
+        Ok(Cached::new_uncached(allowed_ips))
+    }
+
+    async fn get_allowed_vpc_endpoint_ids(
+        &self,
+        ctx: &RequestContext,
+        user_info: &ComputeUserInfo,
+    ) -> Result<CachedAllowedVpcEndpointIds, GetAuthInfoError> {
+        let normalized_ep = &user_info.endpoint.normalize();
+        if let Some(allowed_vcp_endpoint_ids) = self.caches.project_info.get_allowed_vpc_endpoint_ids(normalized_ep) {
+            Metrics::get()
+                .proxy
+                .allowed_ips_cache_misses // TODO Replace with a dedicated variable
+                .inc(CacheOutcome::Hit);
+            return Ok(allowed_vcp_endpoint_ids);
+        }
+
+        Metrics::get()
+            .proxy
+            .allowed_ips_cache_misses // TODO Replace with a dedicated variable
+            .inc(CacheOutcome::Miss);
+
+        let auth_info = self.do_get_auth_info(ctx, user_info).await?;
+        let allowed_ips = Arc::new(auth_info.allowed_ips);
+        let allowed_vcp_endpoint_ids = Arc::new(auth_info.allowed_vpc_endpoint_ids);
+        let user = &user_info.user;
+        if let Some(project_id) = auth_info.project_id {
+            let normalized_ep_int = normalized_ep.into();
+            self.caches.project_info.insert_role_secret(
+                project_id,
+                normalized_ep_int,
+                user.into(),
+                auth_info.secret.clone(),
+            );
+            self.caches.project_info.insert_allowed_ips(
+                project_id,
+                normalized_ep_int,
+                allowed_ips.clone(),
+            );
+            self.caches.project_info.insert_allowed_vpc_endpoint_ids(
+                project_id,
+                normalized_ep_int,
+                allowed_vcp_endpoint_ids.clone(),
+            );
+            ctx.set_project_id(project_id);
+        }
+        Ok(Cached::new_uncached(allowed_vcp_endpoint_ids))
     }
 
     #[tracing::instrument(skip_all)]

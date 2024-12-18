@@ -474,13 +474,13 @@ mod tests {
             "role_secret": "secret",
             "allowed_vpc_endpoint_ids": ["vpce-0abcd1234567890ef"],
         });
-        serde_json::from_str::<GetRoleSecret>(&json.to_string())?;
+        serde_json::from_str::<GetEndpointAccessControl>(&json.to_string())?;
         let json = json!({
             "role_secret": "secret",
             "allowed_ips": ["8.8.8.8"],
             "allowed_vpc_endpoint_ids": ["vpce-0abcd1234567890ef"],
         });
-        serde_json::from_str::<GetRoleSecret>(&json.to_string())?;
+        serde_json::from_str::<GetEndpointAccessControl>(&json.to_string())?;
         let json = json!({
             "role_secret": "secret",
             "allowed_ips": ["8.8.8.8"],
