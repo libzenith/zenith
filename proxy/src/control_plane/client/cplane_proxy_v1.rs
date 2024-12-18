@@ -151,7 +151,10 @@ impl NeonControlPlaneClient {
                 .allowed_ips_number
                 .observe(allowed_ips.len() as f64);
             let allowed_vpc_endpoint_ids = body.allowed_vpc_endpoint_ids.unwrap_or_default();
-            // TODO: Add metrics?
+            Metrics::get()
+                .proxy
+                .allowed_vpc_endpoint_ids
+                .observe(allowed_vpc_endpoint_ids.len() as f64);
             Ok(AuthInfo {
                 secret,
                 allowed_ips,
@@ -376,14 +379,14 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
         if let Some(allowed_vcp_endpoint_ids) = self.caches.project_info.get_allowed_vpc_endpoint_ids(normalized_ep) {
             Metrics::get()
                 .proxy
-                .allowed_ips_cache_misses // TODO Replace with a dedicated variable
+                .vpc_endpoint_id_cache_stats
                 .inc(CacheOutcome::Hit);
             return Ok(allowed_vcp_endpoint_ids);
         }
 
         Metrics::get()
             .proxy
-            .allowed_ips_cache_misses // TODO Replace with a dedicated variable
+            .vpc_endpoint_id_cache_stats
             .inc(CacheOutcome::Miss);
 
         let auth_info = self.do_get_auth_info(ctx, user_info).await?;

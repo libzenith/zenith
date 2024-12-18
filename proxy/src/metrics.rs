@@ -96,6 +96,13 @@ pub struct ProxyMetrics {
     #[metric(metadata = Thresholds::with_buckets([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 50.0, 100.0]))]
     pub allowed_ips_number: Histogram<10>,
 
+    /// Number of cache hits/misses for VPC endpoint IDs.
+    pub vpc_endpoint_id_cache_stats: CounterVec<StaticLabelSet<CacheOutcome>>,
+
+    /// Number of allowed VPC endpoints IDs
+    #[metric(metadata = Thresholds::with_buckets([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 50.0, 100.0]))]
+    pub allowed_vpc_endpoint_ids: Histogram<10>,
+
     /// Number of connections (per sni).
     pub accepted_connections_by_sni: CounterVec<StaticLabelSet<SniKind>>,
 
