@@ -19,6 +19,7 @@ use crate::cache::{Cached, TimedLru};
 use crate::config::ComputeConfig;
 use crate::context::RequestContext;
 use crate::control_plane::messages::{ControlPlaneErrorMessage, MetricsAuxInfo};
+use crate::intern::AccountIdInt;
 use crate::intern::ProjectIdInt;
 use crate::types::{EndpointCacheKey, EndpointId};
 use crate::{compute, scram};
@@ -56,6 +57,12 @@ pub(crate) struct AuthInfo {
     pub(crate) allowed_vpc_endpoint_ids: Vec<String>,
     /// Project ID. This is used for cache invalidation.
     pub(crate) project_id: Option<ProjectIdInt>,
+    /// Account ID. This is used for cache invalidation.
+    pub(crate) account_id: Option<AccountIdInt>,
+    /// Are public connections blocked?
+    pub(crate) block_public_connections: bool,
+    /// Are private connections blocked?
+    pub(crate) block_private_connections: bool,
 }
 
 /// Info for establishing a connection to a compute node.

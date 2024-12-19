@@ -4,7 +4,7 @@ use measured::FixedCardinalityLabel;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::IpPattern;
-use crate::intern::{BranchIdInt, EndpointIdInt, ProjectIdInt, RoleNameInt};
+use crate::intern::{AccountIdInt, BranchIdInt, EndpointIdInt, ProjectIdInt, RoleNameInt};
 use crate::proxy::retry::CouldRetry;
 
 /// Generic error response with human-readable description.
@@ -229,6 +229,9 @@ pub(crate) struct GetEndpointAccessControl {
     pub(crate) allowed_ips: Option<Vec<IpPattern>>,
     pub(crate) allowed_vpc_endpoint_ids: Option<Vec<String>>,
     pub(crate) project_id: Option<ProjectIdInt>,
+    pub(crate) account_id: Option<AccountIdInt>,
+    pub(crate) block_public_connections: Option<bool>,
+    pub(crate) block_vpc_connections: Option<bool>,
 }
 
 /// Response which holds compute node's `host:port` pair.
@@ -460,7 +463,7 @@ mod tests {
 
     #[test]
     fn parse_get_role_secret() -> anyhow::Result<()> {
-        // Empty `allowed_ips` and `allowed_vcp_endpoint_ids` field.
+        // Empty `allowed_ips` and `allowed_vpc_endpoint_ids` field.
         let json = json!({
             "role_secret": "secret",
         });

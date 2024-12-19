@@ -16,12 +16,15 @@ use super::{Cache, Cached};
 use crate::auth::IpPattern;
 use crate::config::ProjectInfoCacheOptions;
 use crate::control_plane::AuthSecret;
-use crate::intern::{EndpointIdInt, ProjectIdInt, RoleNameInt};
+use crate::intern::{AccountIdInt, EndpointIdInt, ProjectIdInt, RoleNameInt};
 use crate::types::{EndpointId, RoleName};
 
 #[async_trait]
 pub(crate) trait ProjectInfoCache {
     fn invalidate_allowed_ips_for_project(&self, project_id: ProjectIdInt);
+    fn invalidate_allowed_vpc_endpoint_ids_for_projects(&self, project_ids: Vec<ProjectIdInt>);
+    fn invalidate_allowed_vpc_endpoint_ids_for_org(&self, account_id: AccountIdInt);
+    fn invalidate_block_public_or_vpc_access_for_project(&self, project_id: ProjectIdInt);
     fn invalidate_role_secret_for_project(&self, project_id: ProjectIdInt, role_name: RoleNameInt);
     async fn decrement_active_listeners(&self);
     async fn increment_active_listeners(&self);
@@ -51,6 +54,7 @@ impl<T> From<T> for Entry<T> {
 struct EndpointInfo {
     secret: std::collections::HashMap<RoleNameInt, Entry<Option<AuthSecret>>>,
     allowed_ips: Option<Entry<Arc<Vec<IpPattern>>>>,
+    block_public_or_vpc_access: Option<Entry<(bool, bool)>>,
     allowed_vpc_endpoint_ids: Option<Entry<Arc<Vec<String>>>>,
 }
 
@@ -111,11 +115,33 @@ impl EndpointInfo {
         }
         None
     }
+    pub(crate) fn get_block_public_or_vpc_access(
+        &self,
+        valid_since: Instant,
+        ignore_cache_since: Option<Instant>,
+    ) -> Option<((bool, bool), bool)> {
+        if let Some(block_public_or_vpc_access) = &self.block_public_or_vpc_access {
+            if valid_since < block_public_or_vpc_access.created_at {
+                return Some((
+                    block_public_or_vpc_access.value.clone(),
+                    Self::check_ignore_cache(
+                        ignore_cache_since,
+                        block_public_or_vpc_access.created_at,
+                    ),
+                ));
+            }
+        }
+        None
+    }
+
     pub(crate) fn invalidate_allowed_ips(&mut self) {
         self.allowed_ips = None;
     }
     pub(crate) fn invalidate_allowed_vpc_endpoint_ids(&mut self) {
         self.allowed_vpc_endpoint_ids = None;
+    }
+    pub(crate) fn invalidate_block_public_or_vpc_access(&mut self) {
+        self.block_public_or_vpc_access = None;
     }
     pub(crate) fn invalidate_role_secret(&mut self, role_name: RoleNameInt) {
         self.secret.remove(&role_name);
@@ -133,6 +159,8 @@ pub struct ProjectInfoCacheImpl {
     cache: DashMap<EndpointIdInt, EndpointInfo>,
 
     project2ep: DashMap<ProjectIdInt, HashSet<EndpointIdInt>>,
+    // FIXME(stefan): we need a way to GC the account2ep map.
+    account2ep: DashMap<AccountIdInt, HashSet<EndpointIdInt>>,
     config: ProjectInfoCacheOptions,
 
     start_time: Instant,
@@ -142,6 +170,63 @@ pub struct ProjectInfoCacheImpl {
 
 #[async_trait]
 impl ProjectInfoCache for ProjectInfoCacheImpl {
+    fn invalidate_allowed_vpc_endpoint_ids_for_projects(&self, project_ids: Vec<ProjectIdInt>) {
+        info!(
+            "invalidating allowed vpc endpoint ids for projects `{}`",
+            project_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for project_id in project_ids {
+            let endpoints = self
+                .project2ep
+                .get(&project_id)
+                .map(|kv| kv.value().clone())
+                .unwrap_or_default();
+            for endpoint_id in endpoints {
+                if let Some(mut endpoint_info) = self.cache.get_mut(&endpoint_id) {
+                    endpoint_info.invalidate_allowed_vpc_endpoint_ids();
+                }
+            }
+        }
+    }
+
+    fn invalidate_allowed_vpc_endpoint_ids_for_org(&self, account_id: AccountIdInt) {
+        info!(
+            "invalidating allowed vpc endpoint ids for org `{}`",
+            account_id
+        );
+        let endpoints = self
+            .account2ep
+            .get(&account_id)
+            .map(|kv| kv.value().clone())
+            .unwrap_or_default();
+        for endpoint_id in endpoints {
+            if let Some(mut endpoint_info) = self.cache.get_mut(&endpoint_id) {
+                endpoint_info.invalidate_allowed_vpc_endpoint_ids();
+            }
+        }
+    }
+
+    fn invalidate_block_public_or_vpc_access_for_project(&self, project_id: ProjectIdInt) {
+        info!(
+            "invalidating block public or vpc access for project `{}`",
+            project_id
+        );
+        let endpoints = self
+            .project2ep
+            .get(&project_id)
+            .map(|kv| kv.value().clone())
+            .unwrap_or_default();
+        for endpoint_id in endpoints {
+            if let Some(mut endpoint_info) = self.cache.get_mut(&endpoint_id) {
+                endpoint_info.invalidate_block_public_or_vpc_access();
+            }
+        }
+    }
+
     fn invalidate_allowed_ips_for_project(&self, project_id: ProjectIdInt) {
         info!("invalidating allowed ips for project `{}`", project_id);
         let endpoints = self
@@ -200,6 +285,7 @@ impl ProjectInfoCacheImpl {
         Self {
             cache: DashMap::new(),
             project2ep: DashMap::new(),
+            account2ep: DashMap::new(),
             config,
             ttl_disabled_since_us: AtomicU64::new(u64::MAX),
             start_time: Instant::now(),
@@ -301,6 +387,7 @@ impl ProjectInfoCacheImpl {
     }
     pub(crate) fn insert_allowed_vpc_endpoint_ids(
         &self,
+        account_id: Option<AccountIdInt>,
         project_id: ProjectIdInt,
         endpoint_id: EndpointIdInt,
         allowed_vpc_endpoint_ids: Arc<Vec<String>>,
@@ -308,6 +395,9 @@ impl ProjectInfoCacheImpl {
         if self.cache.len() >= self.config.size {
             // If there are too many entries, wait until the next gc cycle.
             return;
+        }
+        if let Some(account_id) = account_id {
+            self.insert_account2endpoint(account_id, endpoint_id);
         }
         self.insert_project2endpoint(project_id, endpoint_id);
         self.cache
@@ -321,6 +411,13 @@ impl ProjectInfoCacheImpl {
         } else {
             self.project2ep
                 .insert(project_id, HashSet::from([endpoint_id]));
+        }
+    }
+    fn insert_account2endpoint(&self, account_id: AccountIdInt, endpoint_id: EndpointIdInt) {
+        if let Some(mut endpoints) = self.account2ep.get_mut(&account_id) {
+            endpoints.insert(endpoint_id);
+        } else {
+            self.account2ep.insert(account_id, HashSet::from([endpoint_id]));
         }
     }
     fn get_cache_times(&self) -> (Instant, Option<Instant>) {

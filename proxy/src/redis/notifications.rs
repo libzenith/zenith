@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::connection_with_credentials_provider::ConnectionWithCredentialsProvider;
 use crate::cache::project_info::ProjectInfoCache;
-use crate::intern::{ProjectIdInt, RoleNameInt};
+use crate::intern::{ProjectIdInt, RoleNameInt, AccountIdInt};
 use crate::metrics::{Metrics, RedisErrors, RedisEventsCount};
 
 const CPLANE_CHANNEL_NAME: &str = "neondb-proxy-ws-updates";
@@ -86,9 +86,7 @@ pub(crate) struct BlockPublicOrVpcAccessUpdated {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub(crate) struct AllowedVpcEndpointsUpdatedForOrg {
-    // TODO: change type once the implementation is more fully fledged.
-    // See e.g. https://github.com/neondatabase/neon/pull/10073.
-    account_id: ProjectIdInt,
+    account_id: AccountIdInt,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -205,6 +203,27 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
                         .proxy
                         .redis_events_count
                         .inc(RedisEventsCount::PasswordUpdate);
+                } else if matches!(
+                    msg,
+                    Notification::AllowedVpcEndpointsUpdatedForProjects { .. }
+                ) {
+                    Metrics::get()
+                        .proxy
+                        .redis_events_count
+                        .inc(RedisEventsCount::AllowedVpcEndpointIdsUpdateForProjects);
+                } else if matches!(
+                    msg,
+                    Notification::AllowedVpcEndpointsUpdatedForOrg { .. }
+                ) {
+                    Metrics::get()
+                        .proxy
+                        .redis_events_count
+                        .inc(RedisEventsCount::AllowedVpcEndpointIdsUpdateForAllProjectsInOrg);
+                } else if matches!(msg, Notification::BlockPublicOrVpcAccessUpdated { .. }) {
+                    Metrics::get()
+                        .proxy
+                        .redis_events_count
+                        .inc(RedisEventsCount::BlockPublicOrVpcAccessUpdate);
                 }
                 // TODO: add additional metrics for the other event types.
 
@@ -229,21 +248,27 @@ fn invalidate_cache<C: ProjectInfoCache>(cache: Arc<C>, msg: Notification) {
     match msg {
         Notification::AllowedIpsUpdate { allowed_ips_update } => {
             cache.invalidate_allowed_ips_for_project(allowed_ips_update.project_id);
-        }
+        },
+        Notification::BlockPublicOrVpcAccessUpdated {
+            block_public_or_vpc_access_updated,
+        } => cache.invalidate_block_public_or_vpc_access_for_project(
+            block_public_or_vpc_access_updated.project_id,
+        ),
+        Notification::AllowedVpcEndpointsUpdatedForOrg {
+            allowed_vpc_endpoints_updated_for_org,
+        } => cache.invalidate_allowed_vpc_endpoint_ids_for_org(
+            allowed_vpc_endpoints_updated_for_org.account_id,
+        ),
+        Notification::AllowedVpcEndpointsUpdatedForProjects {
+            allowed_vpc_endpoints_updated_for_projects,
+        } => cache.invalidate_allowed_vpc_endpoint_ids_for_projects(
+            allowed_vpc_endpoints_updated_for_projects.project_ids,
+        ),
         Notification::PasswordUpdate { password_update } => cache
             .invalidate_role_secret_for_project(
                 password_update.project_id,
                 password_update.role_name,
-            ),
-        Notification::BlockPublicOrVpcAccessUpdated { .. } => {
-            // https://github.com/neondatabase/neon/pull/10073
-        }
-        Notification::AllowedVpcEndpointsUpdatedForOrg { .. } => {
-            // https://github.com/neondatabase/neon/pull/10073
-        }
-        Notification::AllowedVpcEndpointsUpdatedForProjects { .. } => {
-            // https://github.com/neondatabase/neon/pull/10073
-        }
+        ),
         Notification::UnknownTopic => unreachable!(),
     }
 }

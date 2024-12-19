@@ -79,8 +79,10 @@ impl PoolingBackend {
             return Err(AuthError::ip_address_not_allowed(ctx.peer_addr()));
         }
         if incoming_endpoint_id != "" {
-            let allowed_vcp_endpoint_ids = backend.get_allowed_vpc_endpoint_ids(ctx).await?;
-            if !allowed_vcp_endpoint_ids.contains(&incoming_endpoint_id) {
+            let allowed_vpc_endpoint_ids = backend.get_allowed_vpc_endpoint_ids(ctx).await?;
+        // TODO: For now an empty VPC endpoint ID list means all are allowed. We should replace that.
+        if !allowed_vpc_endpoint_ids.is_empty() &&
+            !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id) {
                 return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
             }
         }

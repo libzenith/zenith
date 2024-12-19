@@ -97,6 +97,8 @@ smol_str_wrapper!(EndpointId);
 smol_str_wrapper!(BranchId);
 // 90% of project strings are 23 characters or less.
 smol_str_wrapper!(ProjectId);
+// 90% of account strings are 23 characters or less.
+smol_str_wrapper!(AccountId);
 
 // will usually equal endpoint ID
 smol_str_wrapper!(EndpointCacheKey);

@@ -156,11 +156,16 @@ impl NeonControlPlaneClient {
                 .proxy
                 .allowed_vpc_endpoint_ids
                 .observe(allowed_vpc_endpoint_ids.len() as f64);
+            let block_public_connections = body.block_public_connections.unwrap_or_default();
+            let block_vpc_connections = body.block_vpc_connections.unwrap_or_default();
             Ok(AuthInfo {
                 secret,
                 allowed_ips,
                 allowed_vpc_endpoint_ids,
                 project_id: body.project_id,
+                account_id: body.account_id,
+                block_public_connections,
+                block_private_connections: block_vpc_connections,
             })
         }
         .inspect_err(|e| tracing::debug!(error = ?e))
@@ -303,6 +308,7 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
             return Ok(role_secret);
         }
         let auth_info = self.do_get_auth_info(ctx, user_info).await?;
+        let account_id = auth_info.account_id;
         if let Some(project_id) = auth_info.project_id {
             let normalized_ep_int = normalized_ep.into();
             self.caches.project_info.insert_role_secret(
@@ -317,6 +323,7 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
                 Arc::new(auth_info.allowed_ips),
             );
             self.caches.project_info.insert_allowed_vpc_endpoint_ids(
+                account_id,
                 project_id,
                 normalized_ep_int,
                 Arc::new(auth_info.allowed_vpc_endpoint_ids),
@@ -346,8 +353,9 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
             .inc(CacheOutcome::Miss);
         let auth_info = self.do_get_auth_info(ctx, user_info).await?;
         let allowed_ips = Arc::new(auth_info.allowed_ips);
-        let allowed_vcp_endpoint_ids = Arc::new(auth_info.allowed_vpc_endpoint_ids);
+        let allowed_vpc_endpoint_ids = Arc::new(auth_info.allowed_vpc_endpoint_ids);
         let user = &user_info.user;
+        let account_id = auth_info.account_id;
         if let Some(project_id) = auth_info.project_id {
             let normalized_ep_int = normalized_ep.into();
             self.caches.project_info.insert_role_secret(
@@ -362,9 +370,10 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
                 allowed_ips.clone(),
             );
             self.caches.project_info.insert_allowed_vpc_endpoint_ids(
+                account_id,
                 project_id,
                 normalized_ep_int,
-                allowed_vcp_endpoint_ids.clone(),
+                allowed_vpc_endpoint_ids.clone(),
             );
             ctx.set_project_id(project_id);
         }
@@ -377,7 +386,7 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
         user_info: &ComputeUserInfo,
     ) -> Result<CachedAllowedVpcEndpointIds, GetAuthInfoError> {
         let normalized_ep = &user_info.endpoint.normalize();
-        if let Some(allowed_vcp_endpoint_ids) = self
+        if let Some(allowed_vpc_endpoint_ids) = self
             .caches
             .project_info
             .get_allowed_vpc_endpoint_ids(normalized_ep)
@@ -386,7 +395,7 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
                 .proxy
                 .vpc_endpoint_id_cache_stats
                 .inc(CacheOutcome::Hit);
-            return Ok(allowed_vcp_endpoint_ids);
+            return Ok(allowed_vpc_endpoint_ids);
         }
 
         Metrics::get()
@@ -396,8 +405,9 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
 
         let auth_info = self.do_get_auth_info(ctx, user_info).await?;
         let allowed_ips = Arc::new(auth_info.allowed_ips);
-        let allowed_vcp_endpoint_ids = Arc::new(auth_info.allowed_vpc_endpoint_ids);
+        let allowed_vpc_endpoint_ids = Arc::new(auth_info.allowed_vpc_endpoint_ids);
         let user = &user_info.user;
+        let account_id = auth_info.account_id;
         if let Some(project_id) = auth_info.project_id {
             let normalized_ep_int = normalized_ep.into();
             self.caches.project_info.insert_role_secret(
@@ -412,13 +422,14 @@ impl super::ControlPlaneApi for NeonControlPlaneClient {
                 allowed_ips.clone(),
             );
             self.caches.project_info.insert_allowed_vpc_endpoint_ids(
+                account_id,
                 project_id,
                 normalized_ep_int,
-                allowed_vcp_endpoint_ids.clone(),
+                allowed_vpc_endpoint_ids.clone(),
             );
             ctx.set_project_id(project_id);
         }
-        Ok(Cached::new_uncached(allowed_vcp_endpoint_ids))
+        Ok(Cached::new_uncached(allowed_vpc_endpoint_ids))
     }
 
     #[tracing::instrument(skip_all)]
