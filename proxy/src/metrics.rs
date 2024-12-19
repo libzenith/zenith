@@ -101,7 +101,7 @@ pub struct ProxyMetrics {
 
     /// Number of cache hits/misses for access blocker flags.
     pub access_blocker_flags_cache_stats: CounterVec<StaticLabelSet<CacheOutcome>>,
-    
+
     /// Number of allowed VPC endpoints IDs
     #[metric(metadata = Thresholds::with_buckets([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 50.0, 100.0]))]
     pub allowed_vpc_endpoint_ids: Histogram<10>,

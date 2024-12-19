@@ -17,8 +17,8 @@ use crate::cache::project_info::ProjectInfoCacheImpl;
 use crate::config::{CacheOptions, EndpointCacheConfig, ProjectInfoCacheOptions};
 use crate::context::RequestContext;
 use crate::control_plane::{
-    errors, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret,
-    ControlPlaneApi, NodeInfoCache,
+    errors, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds,
+    CachedNodeInfo, CachedRoleSecret, ControlPlaneApi, NodeInfoCache,
 };
 use crate::error::ReportableError;
 use crate::metrics::ApiLockMetrics;
@@ -85,10 +85,10 @@ impl ControlPlaneApi for ControlPlaneClient {
     }
 
     async fn get_block_public_or_vpc_access(
-            &self,
-            ctx: &RequestContext,
-            user_info: &ComputeUserInfo,
-        ) -> Result<CachedAccessBlockerFlags, errors::GetAuthInfoError> {
+        &self,
+        ctx: &RequestContext,
+        user_info: &ComputeUserInfo,
+    ) -> Result<CachedAccessBlockerFlags, errors::GetAuthInfoError> {
         match self {
             Self::ProxyV1(api) => api.get_block_public_or_vpc_access(ctx, user_info).await,
             #[cfg(any(test, feature = "testing"))]

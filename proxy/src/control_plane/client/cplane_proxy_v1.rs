@@ -22,8 +22,8 @@ use crate::control_plane::errors::{
 use crate::control_plane::locks::ApiLocks;
 use crate::control_plane::messages::{ColdStartInfo, EndpointJwksResponse, Reason};
 use crate::control_plane::{
-    AuthInfo, AuthSecret, AccessBlockerFlags, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo,
-    CachedRoleSecret, NodeInfo,
+    AccessBlockerFlags, AuthInfo, AuthSecret, CachedAccessBlockerFlags, CachedAllowedIps,
+    CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret, NodeInfo,
 };
 use crate::metrics::{CacheOutcome, Metrics};
 use crate::rate_limiter::WakeComputeRateLimiter;

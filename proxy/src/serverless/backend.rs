@@ -84,7 +84,7 @@ impl PoolingBackend {
                 }
                 Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
             };
-    
+
             if incoming_endpoint_id == "" {
                 return Err(AuthError::MissingVPCEndpointId);
             }

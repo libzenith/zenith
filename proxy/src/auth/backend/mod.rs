@@ -26,8 +26,8 @@ use crate::context::RequestContext;
 use crate::control_plane::client::ControlPlaneClient;
 use crate::control_plane::errors::GetAuthInfoError;
 use crate::control_plane::{
-    self, AuthSecret, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo,
-    CachedRoleSecret, ControlPlaneApi,
+    self, AuthSecret, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds,
+    CachedNodeInfo, CachedRoleSecret, ControlPlaneApi,
 };
 use crate::intern::EndpointIdInt;
 use crate::metrics::Metrics;
@@ -321,7 +321,9 @@ async fn auth_quirks(
         if !allowed_vpc_endpoint_ids.is_empty()
             && !allowed_vpc_endpoint_ids.contains(&incoming_vpc_endpoint_id)
         {
-            return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_vpc_endpoint_id));
+            return Err(AuthError::vpc_endpoint_id_not_allowed(
+                incoming_vpc_endpoint_id,
+            ));
         }
     } else {
         if access_blocks.public_access_blocked {
@@ -501,7 +503,9 @@ impl Backend<'_, ComputeUserInfo> {
         ctx: &RequestContext,
     ) -> Result<CachedAccessBlockerFlags, GetAuthInfoError> {
         match self {
-            Self::ControlPlane(api, user_info) => api.get_block_public_or_vpc_access(ctx, user_info).await,
+            Self::ControlPlane(api, user_info) => {
+                api.get_block_public_or_vpc_access(ctx, user_info).await
+            }
             Self::Local(_) => Ok(Cached::new_uncached(Default::default())),
         }
     }
@@ -569,7 +573,8 @@ mod tests {
     use crate::config::AuthenticationConfig;
     use crate::context::RequestContext;
     use crate::control_plane::{
-        self, AccessBlockerFlags, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret,
+        self, AccessBlockerFlags, CachedAccessBlockerFlags, CachedAllowedIps,
+        CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret,
     };
     use crate::proxy::NeonOptions;
     use crate::rate_limiter::{EndpointRateLimiter, RateBucketInfo};
@@ -612,12 +617,12 @@ mod tests {
         }
 
         async fn get_block_public_or_vpc_access(
-                &self,
-                _ctx: &RequestContext,
-                _user_info: &super::ComputeUserInfo,
+            &self,
+            _ctx: &RequestContext,
+            _user_info: &super::ComputeUserInfo,
         ) -> Result<CachedAccessBlockerFlags, control_plane::errors::GetAuthInfoError> {
             Ok(CachedAccessBlockerFlags::new_uncached(
-                self.access_blocker_flags.clone()
+                self.access_blocker_flags.clone(),
             ))
         }
 

@@ -75,9 +75,7 @@ pub(crate) enum AuthError {
     )]
     IpAddressNotAllowed(IpAddr),
 
-    #[error(
-        "This connection is trying to access this endpoint from a blocked network."
-    )]
+    #[error("This connection is trying to access this endpoint from a blocked network.")]
     NetworkNotAllowed,
 
     #[error(

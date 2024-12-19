@@ -538,10 +538,11 @@ impl TestControlPlaneClient for TestConnectMechanism {
 
     fn get_block_public_or_vpc_access(
         &self,
-    ) -> Result<control_plane::CachedAccessBlockerFlags, control_plane::errors::GetAuthInfoError> {
+    ) -> Result<control_plane::CachedAccessBlockerFlags, control_plane::errors::GetAuthInfoError>
+    {
         unimplemented!("not used in tests")
     }
-    
+
     fn dyn_clone(&self) -> Box<dyn TestControlPlaneClient> {
         Box::new(self.clone())
     }
