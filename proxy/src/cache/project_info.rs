@@ -15,7 +15,7 @@ use tracing::{debug, info};
 use super::{Cache, Cached};
 use crate::auth::IpPattern;
 use crate::config::ProjectInfoCacheOptions;
-use crate::control_plane::AuthSecret;
+use crate::control_plane::{AccessBlockerFlags, AuthSecret};
 use crate::intern::{AccountIdInt, EndpointIdInt, ProjectIdInt, RoleNameInt};
 use crate::types::{EndpointId, RoleName};
 
@@ -54,7 +54,7 @@ impl<T> From<T> for Entry<T> {
 struct EndpointInfo {
     secret: std::collections::HashMap<RoleNameInt, Entry<Option<AuthSecret>>>,
     allowed_ips: Option<Entry<Arc<Vec<IpPattern>>>>,
-    block_public_or_vpc_access: Option<Entry<(bool, bool)>>,
+    block_public_or_vpc_access: Option<Entry<AccessBlockerFlags>>,
     allowed_vpc_endpoint_ids: Option<Entry<Arc<Vec<String>>>>,
 }
 
@@ -119,7 +119,7 @@ impl EndpointInfo {
         &self,
         valid_since: Instant,
         ignore_cache_since: Option<Instant>,
-    ) -> Option<((bool, bool), bool)> {
+    ) -> Option<(AccessBlockerFlags, bool)> {
         if let Some(block_public_or_vpc_access) = &self.block_public_or_vpc_access {
             if valid_since < block_public_or_vpc_access.created_at {
                 return Some((
@@ -355,6 +355,28 @@ impl ProjectInfoCacheImpl {
         }
         Some(Cached::new_uncached(value))
     }
+    pub(crate) fn get_block_public_or_vpc_access(
+        &self,
+        endpoint_id: &EndpointId,
+    ) -> Option<Cached<&Self, AccessBlockerFlags>> {
+        let endpoint_id = EndpointIdInt::get(endpoint_id)?;
+        let (valid_since, ignore_cache_since) = self.get_cache_times();
+        let endpoint_info = self.cache.get(&endpoint_id)?;
+        let value = endpoint_info.get_block_public_or_vpc_access(valid_since, ignore_cache_since);
+        let (value, ignore_cache) = value?;
+        if !ignore_cache {
+            let cached = Cached {
+                token: Some((
+                    self,
+                    CachedLookupInfo::new_block_public_or_vpc_access(endpoint_id),
+                )),
+                value,
+            };
+            return Some(cached);
+        }
+        Some(Cached::new_uncached(value))
+    }
+
     pub(crate) fn insert_role_secret(
         &self,
         project_id: ProjectIdInt,
@@ -405,6 +427,23 @@ impl ProjectInfoCacheImpl {
             .or_default()
             .allowed_vpc_endpoint_ids = Some(allowed_vpc_endpoint_ids.into());
     }
+    pub(crate) fn insert_block_public_or_vpc_access(
+        &self,
+        project_id: ProjectIdInt,
+        endpoint_id: EndpointIdInt,
+        access_blockers: AccessBlockerFlags,
+    ) {
+        if self.cache.len() >= self.config.size {
+            // If there are too many entries, wait until the next gc cycle.
+            return;
+        }
+        self.insert_project2endpoint(project_id, endpoint_id);
+        self.cache
+            .entry(endpoint_id)
+            .or_default()
+            .block_public_or_vpc_access = Some(access_blockers.into());
+    }
+
     fn insert_project2endpoint(&self, project_id: ProjectIdInt, endpoint_id: EndpointIdInt) {
         if let Some(mut endpoints) = self.project2ep.get_mut(&project_id) {
             endpoints.insert(endpoint_id);
@@ -497,12 +536,19 @@ impl CachedLookupInfo {
             lookup_type: LookupType::AllowedVpcEndpointIds,
         }
     }
+    pub(self) fn new_block_public_or_vpc_access(endpoint_id: EndpointIdInt) -> Self {
+        Self {
+            endpoint_id,
+            lookup_type: LookupType::BlockPublicOrVpcAccess,
+        }
+    }
 }
 
 enum LookupType {
     RoleSecret(RoleNameInt),
     AllowedIps,
     AllowedVpcEndpointIds,
+    BlockPublicOrVpcAccess,
 }
 
 impl Cache for ProjectInfoCacheImpl {
@@ -527,6 +573,11 @@ impl Cache for ProjectInfoCacheImpl {
             LookupType::AllowedVpcEndpointIds => {
                 if let Some(mut endpoint_info) = self.cache.get_mut(&key.endpoint_id) {
                     endpoint_info.invalidate_allowed_vpc_endpoint_ids();
+                }
+            }
+            LookupType::BlockPublicOrVpcAccess => {
+                if let Some(mut endpoint_info) = self.cache.get_mut(&key.endpoint_id) {
+                    endpoint_info.invalidate_block_public_or_vpc_access();
                 }
             }
         }

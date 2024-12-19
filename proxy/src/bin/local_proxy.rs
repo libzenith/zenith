@@ -284,6 +284,7 @@ fn build_config(args: &LocalProxyCliArgs) -> anyhow::Result<&'static ProxyConfig
             rate_limiter: BucketRateLimiter::new(vec![]),
             rate_limit_ip_subnet: 64,
             ip_allowlist_check_enabled: true,
+            is_vpc_acccess_proxy: false,
             is_auth_broker: false,
             accept_jwts: true,
             console_redirect_confirmation_timeout: Duration::ZERO,

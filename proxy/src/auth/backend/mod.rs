@@ -26,7 +26,7 @@ use crate::context::RequestContext;
 use crate::control_plane::client::ControlPlaneClient;
 use crate::control_plane::errors::GetAuthInfoError;
 use crate::control_plane::{
-    self, AuthSecret, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo,
+    self, AuthSecret, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo,
     CachedRoleSecret, ControlPlaneApi,
 };
 use crate::intern::EndpointIdInt;
@@ -295,26 +295,37 @@ async fn auth_quirks(
     }
 
     // check if a VPC endpoint ID is coming in and if yes, if it's allowed
-    // TODO: Add flag to enable/disable VPC endpoint ID check
-    let extra = ctx.extra();
-    let incoming_endpoint_id = match extra {
-        None => "".to_string(),
-        Some(ConnectionInfoExtra::Aws { vpce_id }) => {
-            // Convert the vcpe_id to a string
-            match String::from_utf8(vpce_id.to_vec()) {
-                Ok(s) => s,
-                Err(_e) => "".to_string(),
-            }
+    let access_blocks = api.get_block_public_or_vpc_access(ctx, &info).await?;
+    if config.is_vpc_acccess_proxy {
+        if access_blocks.vpc_access_blocked {
+            return Err(AuthError::NetworkNotAllowed);
         }
-        Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
-    };
-    if incoming_endpoint_id != "" {
+        let extra = ctx.extra();
+        let incoming_vpc_endpoint_id = match extra {
+            None => "".to_string(),
+            Some(ConnectionInfoExtra::Aws { vpce_id }) => {
+                // Convert the vcpe_id to a string
+                match String::from_utf8(vpce_id.to_vec()) {
+                    Ok(s) => s,
+                    Err(_e) => "".to_string(),
+                }
+            }
+            Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
+        };
+        if incoming_vpc_endpoint_id == "" {
+            // This should never happen, would be a setup error on our side.
+            return Err(AuthError::MissingEndpointName);
+        }
         let allowed_vpc_endpoint_ids = api.get_allowed_vpc_endpoint_ids(ctx, &info).await?;
         // TODO: For now an empty VPC endpoint ID list means all are allowed. We should replace that.
         if !allowed_vpc_endpoint_ids.is_empty()
-            && !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id)
+            && !allowed_vpc_endpoint_ids.contains(&incoming_vpc_endpoint_id)
         {
-            return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
+            return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_vpc_endpoint_id));
+        }
+    } else {
+        if access_blocks.public_access_blocked {
+            return Err(AuthError::NetworkNotAllowed);
         }
     }
 
@@ -484,6 +495,16 @@ impl Backend<'_, ComputeUserInfo> {
             Self::Local(_) => Ok(Cached::new_uncached(Arc::new(vec![]))),
         }
     }
+
+    pub(crate) async fn get_block_public_or_vpc_access(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<CachedAccessBlockerFlags, GetAuthInfoError> {
+        match self {
+            Self::ControlPlane(api, user_info) => api.get_block_public_or_vpc_access(ctx, user_info).await,
+            Self::Local(_) => Ok(Cached::new_uncached(Default::default())),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -548,7 +569,7 @@ mod tests {
     use crate::config::AuthenticationConfig;
     use crate::context::RequestContext;
     use crate::control_plane::{
-        self, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret,
+        self, AccessBlockerFlags, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret,
     };
     use crate::proxy::NeonOptions;
     use crate::rate_limiter::{EndpointRateLimiter, RateBucketInfo};
@@ -559,6 +580,7 @@ mod tests {
     struct Auth {
         ips: Vec<IpPattern>,
         vpc_endpoint_ids: Vec<String>,
+        access_blocker_flags: AccessBlockerFlags,
         secret: AuthSecret,
     }
 
@@ -589,6 +611,16 @@ mod tests {
             )))
         }
 
+        async fn get_block_public_or_vpc_access(
+                &self,
+                _ctx: &RequestContext,
+                _user_info: &super::ComputeUserInfo,
+        ) -> Result<CachedAccessBlockerFlags, control_plane::errors::GetAuthInfoError> {
+            Ok(CachedAccessBlockerFlags::new_uncached(
+                self.access_blocker_flags.clone()
+            ))
+        }
+
         async fn get_endpoint_jwks(
             &self,
             _ctx: &RequestContext,
@@ -615,6 +647,7 @@ mod tests {
         rate_limiter: AuthRateLimiter::new(&RateBucketInfo::DEFAULT_AUTH_SET),
         rate_limit_ip_subnet: 64,
         ip_allowlist_check_enabled: true,
+        is_vpc_acccess_proxy: false,
         is_auth_broker: false,
         accept_jwts: false,
         console_redirect_confirmation_timeout: std::time::Duration::from_secs(5),
@@ -683,6 +716,7 @@ mod tests {
         let api = Auth {
             ips: vec![],
             vpc_endpoint_ids: vec![],
+            access_blocker_flags: AccessBlockerFlags::default(),
             secret: AuthSecret::Scram(ServerSecret::build("my-secret-password").await.unwrap()),
         };
 
@@ -764,6 +798,7 @@ mod tests {
         let api = Auth {
             ips: vec![],
             vpc_endpoint_ids: vec![],
+            access_blocker_flags: AccessBlockerFlags::default(),
             secret: AuthSecret::Scram(ServerSecret::build("my-secret-password").await.unwrap()),
         };
 
@@ -817,6 +852,7 @@ mod tests {
         let api = Auth {
             ips: vec![],
             vpc_endpoint_ids: vec![],
+            access_blocker_flags: AccessBlockerFlags::default(),
             secret: AuthSecret::Scram(ServerSecret::build("my-secret-password").await.unwrap()),
         };
 

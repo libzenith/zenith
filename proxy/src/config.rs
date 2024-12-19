@@ -68,6 +68,7 @@ pub struct AuthenticationConfig {
     pub rate_limiter: AuthRateLimiter,
     pub rate_limit_ip_subnet: u8,
     pub ip_allowlist_check_enabled: bool,
+    pub is_vpc_acccess_proxy: bool,
     pub jwks_cache: JwkCache,
     pub is_auth_broker: bool,
     pub accept_jwts: bool,

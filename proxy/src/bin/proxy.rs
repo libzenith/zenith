@@ -626,6 +626,7 @@ fn build_config(args: &ProxyCliArgs) -> anyhow::Result<&'static ProxyConfig> {
         rate_limiter: AuthRateLimiter::new(args.auth_rate_limit.clone()),
         rate_limit_ip_subnet: args.auth_rate_limit_ip_subnet,
         ip_allowlist_check_enabled: !args.is_private_access_proxy,
+        is_vpc_acccess_proxy: args.is_private_access_proxy,
         is_auth_broker: args.is_auth_broker,
         accept_jwts: args.is_auth_broker,
         console_redirect_confirmation_timeout: args.webauth_confirmation_timeout,

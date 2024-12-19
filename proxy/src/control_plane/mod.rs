@@ -59,10 +59,8 @@ pub(crate) struct AuthInfo {
     pub(crate) project_id: Option<ProjectIdInt>,
     /// Account ID. This is used for cache invalidation.
     pub(crate) account_id: Option<AccountIdInt>,
-    /// Are public connections blocked?
-    pub(crate) block_public_connections: bool,
-    /// Are private connections blocked?
-    pub(crate) block_private_connections: bool,
+    /// Are public connections or VPC connections blocked?
+    pub(crate) access_blocker_flags: AccessBlockerFlags,
 }
 
 /// Info for establishing a connection to a compute node.
@@ -104,6 +102,12 @@ impl NodeInfo {
     }
 }
 
+#[derive(Clone, Default, Eq, PartialEq, Debug)]
+pub(crate) struct AccessBlockerFlags {
+    pub public_access_blocked: bool,
+    pub vpc_access_blocked: bool,
+}
+
 pub(crate) type NodeInfoCache =
     TimedLru<EndpointCacheKey, Result<NodeInfo, Box<ControlPlaneErrorMessage>>>;
 pub(crate) type CachedNodeInfo = Cached<&'static NodeInfoCache, NodeInfo>;
@@ -111,6 +115,8 @@ pub(crate) type CachedRoleSecret = Cached<&'static ProjectInfoCacheImpl, Option<
 pub(crate) type CachedAllowedIps = Cached<&'static ProjectInfoCacheImpl, Arc<Vec<IpPattern>>>;
 pub(crate) type CachedAllowedVpcEndpointIds =
     Cached<&'static ProjectInfoCacheImpl, Arc<Vec<String>>>;
+pub(crate) type CachedAccessBlockerFlags =
+    Cached<&'static ProjectInfoCacheImpl, AccessBlockerFlags>;
 
 /// This will allocate per each call, but the http requests alone
 /// already require a few allocations, so it should be fine.
@@ -135,6 +141,12 @@ pub(crate) trait ControlPlaneApi {
         ctx: &RequestContext,
         user_info: &ComputeUserInfo,
     ) -> Result<CachedAllowedVpcEndpointIds, errors::GetAuthInfoError>;
+
+    async fn get_block_public_or_vpc_access(
+        &self,
+        ctx: &RequestContext,
+        user_info: &ComputeUserInfo,
+    ) -> Result<CachedAccessBlockerFlags, errors::GetAuthInfoError>;
 
     async fn get_endpoint_jwks(
         &self,

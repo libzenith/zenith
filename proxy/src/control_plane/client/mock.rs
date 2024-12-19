@@ -126,6 +126,8 @@ impl MockControlPlane {
             // TODO
             allowed_vpc_endpoint_ids: vec![],
             project_id: None,
+            account_id: None,
+            access_blocker_flags: Default::default(),
         })
     }
 
@@ -239,6 +241,14 @@ impl super::ControlPlaneApi for MockControlPlane {
                 .allowed_vpc_endpoint_ids,
         )))
     }
+
+    async fn get_block_public_or_vpc_access(
+            &self,
+            _ctx: &RequestContext,
+            user_info: &ComputeUserInfo,
+        ) -> Result<super::CachedAccessBlockerFlags, super::errors::GetAuthInfoError> {
+            Ok(Cached::new_uncached(self.do_get_auth_info(user_info).await?.access_blocker_flags))
+        }
 
     async fn get_endpoint_jwks(
         &self,
