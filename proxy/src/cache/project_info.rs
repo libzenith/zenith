@@ -417,7 +417,8 @@ impl ProjectInfoCacheImpl {
         if let Some(mut endpoints) = self.account2ep.get_mut(&account_id) {
             endpoints.insert(endpoint_id);
         } else {
-            self.account2ep.insert(account_id, HashSet::from([endpoint_id]));
+            self.account2ep
+                .insert(account_id, HashSet::from([endpoint_id]));
         }
     }
     fn get_cache_times(&self) -> (Instant, Option<Instant>) {
