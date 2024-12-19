@@ -287,6 +287,8 @@ pub(crate) struct DatabaseInfo {
     pub(crate) allowed_ips: Option<Vec<IpPattern>>,
     #[serde(default)]
     pub(crate) allowed_vpc_endpoint_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) public_access_allowed: Option<bool>,
 }
 
 // Manually implement debug to omit sensitive info.

@@ -191,6 +191,15 @@ async fn authenticate(
         }
     }
 
+    // Check if the access over the public internet is allowed, otherwise block. Note that
+    // the console redirect is not behind the VPC service endpoint, so we don't need to check
+    // the VPC endpoint ID.
+    if let Some(public_access_allowed) = db_info.public_access_allowed {
+        if !public_access_allowed {
+            return Err(auth::AuthError::NetworkNotAllowed);
+        }
+    }
+
     client.write_message_noflush(&Be::NoticeResponse("Connecting to database."))?;
 
     // This config should be self-contained, because we won't
