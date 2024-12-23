@@ -302,7 +302,7 @@ async fn auth_quirks(
         }
         let extra = ctx.extra();
         let incoming_vpc_endpoint_id = match extra {
-            None => "".to_string(),
+            None => return Err(AuthError::MissingEndpointName),
             Some(ConnectionInfoExtra::Aws { vpce_id }) => {
                 // Convert the vcpe_id to a string
                 match String::from_utf8(vpce_id.to_vec()) {
@@ -312,10 +312,6 @@ async fn auth_quirks(
             }
             Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
         };
-        if incoming_vpc_endpoint_id == "" {
-            // This should never happen, would be a setup error on our side.
-            return Err(AuthError::MissingEndpointName);
-        }
         let allowed_vpc_endpoint_ids = api.get_allowed_vpc_endpoint_ids(ctx, &info).await?;
         // TODO: For now an empty VPC endpoint ID list means all are allowed. We should replace that.
         if !allowed_vpc_endpoint_ids.is_empty()

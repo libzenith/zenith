@@ -123,7 +123,6 @@ impl MockControlPlane {
         Ok(AuthInfo {
             secret,
             allowed_ips,
-            // TODO
             allowed_vpc_endpoint_ids: vec![],
             project_id: None,
             account_id: None,
