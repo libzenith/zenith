@@ -74,18 +74,18 @@ impl PoolingBackend {
 
             let extra = ctx.extra();
             let incoming_endpoint_id = match extra {
-                None => "".to_string(),
+                None => String::new(),
                 Some(ConnectionInfoExtra::Aws { vpce_id }) => {
                     // Convert the vcpe_id to a string
                     match String::from_utf8(vpce_id.to_vec()) {
                         Ok(s) => s,
-                        Err(_e) => "".to_string(),
+                        Err(_e) => String::new(),
                     }
                 }
                 Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
             };
 
-            if incoming_endpoint_id == "" {
+            if incoming_endpoint_id.is_empty() {
                 return Err(AuthError::MissingVPCEndpointId);
             }
 
@@ -96,10 +96,8 @@ impl PoolingBackend {
             {
                 return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
             }
-        } else {
-            if access_blocker_flags.public_access_blocked {
-                return Err(AuthError::NetworkNotAllowed);
-            }
+        } else if access_blocker_flags.public_access_blocked {
+            return Err(AuthError::NetworkNotAllowed);
         }
 
         if !self

@@ -26,8 +26,8 @@ use crate::context::RequestContext;
 use crate::control_plane::client::ControlPlaneClient;
 use crate::control_plane::errors::GetAuthInfoError;
 use crate::control_plane::{
-    self, AuthSecret, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds,
-    CachedNodeInfo, CachedRoleSecret, ControlPlaneApi,
+    self, AccessBlockerFlags, AuthSecret, CachedAccessBlockerFlags, CachedAllowedIps,
+    CachedAllowedVpcEndpointIds, CachedNodeInfo, CachedRoleSecret, ControlPlaneApi,
 };
 use crate::intern::EndpointIdInt;
 use crate::metrics::Metrics;
@@ -307,7 +307,7 @@ async fn auth_quirks(
                 // Convert the vcpe_id to a string
                 match String::from_utf8(vpce_id.to_vec()) {
                     Ok(s) => s,
-                    Err(_e) => "".to_string(),
+                    Err(_e) => String::new(),
                 }
             }
             Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
@@ -321,10 +321,8 @@ async fn auth_quirks(
                 incoming_vpc_endpoint_id,
             ));
         }
-    } else {
-        if access_blocks.public_access_blocked {
-            return Err(AuthError::NetworkNotAllowed);
-        }
+    } else if access_blocks.public_access_blocked {
+        return Err(AuthError::NetworkNotAllowed);
     }
 
     if !endpoint_rate_limiter.check(info.endpoint.clone().into(), 1) {
@@ -502,7 +500,7 @@ impl Backend<'_, ComputeUserInfo> {
             Self::ControlPlane(api, user_info) => {
                 api.get_block_public_or_vpc_access(ctx, user_info).await
             }
-            Self::Local(_) => Ok(Cached::new_uncached(Default::default())),
+            Self::Local(_) => Ok(Cached::new_uncached(AccessBlockerFlags::default())),
         }
     }
 }

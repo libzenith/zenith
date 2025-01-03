@@ -20,7 +20,7 @@ use crate::control_plane::errors::{
     ControlPlaneError, GetAuthInfoError, GetEndpointJwksError, WakeComputeError,
 };
 use crate::control_plane::messages::MetricsAuxInfo;
-use crate::control_plane::{AuthInfo, AuthSecret, CachedNodeInfo, NodeInfo};
+use crate::control_plane::{AccessBlockerFlags, AuthInfo, AuthSecret, CachedNodeInfo, NodeInfo};
 use crate::error::io_error;
 use crate::intern::RoleNameInt;
 use crate::types::{BranchId, EndpointId, ProjectId, RoleName};
@@ -126,7 +126,7 @@ impl MockControlPlane {
             allowed_vpc_endpoint_ids: vec![],
             project_id: None,
             account_id: None,
-            access_blocker_flags: Default::default(),
+            access_blocker_flags: AccessBlockerFlags::default(),
         })
     }
 
