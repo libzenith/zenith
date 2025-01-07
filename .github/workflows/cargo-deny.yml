@@ -1,0 +1,57 @@
+name: cargo deny checks
+
+on:
+  workflow_call:
+    inputs:
+      build-tools-image:
+        required: false
+        type: string
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  cargo-deny:
+    strategy:
+      matrix:
+        ref: >-
+          ${{
+            fromJSON(
+              github.event_name == 'schedule'
+                && '["main","release","release-proxy","release-compute"]'
+                || format('["{0}"]', github.sha)
+            )
+          }}
+
+    runs-on: [self-hosted, small]
+
+    container:
+      image: ${{ inputs.build-tools-image || 'neondatabase/build-tools:pinned' }}
+      credentials:
+        username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
+        password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
+      options: --init
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      - name: Check rust licenses/bans/advisories/sources
+        env:
+          CARGO_DENY_TARGET: >-
+            ${{ github.event_name == 'schedule' && 'advisories' || 'all' }}
+        run: cargo deny check --hide-inclusion-graph $CARGO_DENY_TARGET
+
+      - name: Post to a Slack channel
+        if: ${{ github.event_name == 'schedule' && failure() }}
+        uses: slackapi/slack-github-action@v2
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ vars.SLACK_CICD_CHANNEL_ID }}
+            text: |
+              Periodic cargo-deny on ${{ matrix.ref }}: ${{ job.status }}
+              <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub Run>
+              Pinging @oncall-devprod.
