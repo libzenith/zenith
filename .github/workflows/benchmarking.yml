@@ -447,7 +447,7 @@ jobs:
 
         echo "connstr=${CONNSTR}" >> $GITHUB_OUTPUT
 
-    # we want to compare Neon project OLTP throughput and latency at scale factor 10 GB 
+    # we want to compare Neon project OLTP throughput and latency at scale factor 10 GB
     # without (neonvm-captest-new)
     # and with (neonvm-captest-new-many-tables) many relations in the database
     - name: Create many relations before the run
@@ -574,32 +574,20 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # until https://github.com/neondatabase/neon/issues/8275 is fixed we temporarily install postgresql-16
-    # instead of using Neon artifacts containing pgbench
-    - name: Install postgresql-16 where pytest expects it
-      run: |
-        # Just to make it easier to test things locally on macOS (with arm64)
-        arch=$(uname -m | sed 's/x86_64/amd64/g' | sed 's/aarch64/arm64/g')
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: eu-central-1
+        role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+        role-duration-seconds: 18000 # 5 hours
 
-        cd /home/nonroot
-        wget -q "https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-17/libpq5_17.2-1.pgdg120+1_${arch}.deb"
-        wget -q "https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-16/postgresql-client-16_16.6-1.pgdg120+1_${arch}.deb"
-        wget -q "https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-16/postgresql-16_16.6-1.pgdg120+1_${arch}.deb"
-        dpkg -x libpq5_17.2-1.pgdg120+1_${arch}.deb pg
-        dpkg -x postgresql-16_16.6-1.pgdg120+1_${arch}.deb pg
-        dpkg -x postgresql-client-16_16.6-1.pgdg120+1_${arch}.deb pg
-
-        mkdir -p /tmp/neon/pg_install/v16/bin
-        ln -s /home/nonroot/pg/usr/lib/postgresql/16/bin/pgbench /tmp/neon/pg_install/v16/bin/pgbench
-        ln -s /home/nonroot/pg/usr/lib/postgresql/16/bin/psql    /tmp/neon/pg_install/v16/bin/psql
-        ln -s /home/nonroot/pg/usr/lib/$(uname -m)-linux-gnu     /tmp/neon/pg_install/v16/lib
-
-        LD_LIBRARY_PATH="/home/nonroot/pg/usr/lib/$(uname -m)-linux-gnu:${LD_LIBRARY_PATH:-}"
-        export LD_LIBRARY_PATH
-        echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH}" >> ${GITHUB_ENV}
-
-        /tmp/neon/pg_install/v16/bin/pgbench --version
-        /tmp/neon/pg_install/v16/bin/psql --version
+    - name: Download Neon artifact
+      uses: ./.github/actions/download
+      with:
+        name: neon-${{ runner.os }}-${{ runner.arch }}-release-artifact
+        path: /tmp/neon/
+        prefix: latest
+        aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
     - name: Set up Connection String
       id: set-up-connstr
@@ -618,13 +606,6 @@ jobs:
         esac
 
         echo "connstr=${CONNSTR}" >> $GITHUB_OUTPUT
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-region: eu-central-1
-        role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
-        role-duration-seconds: 18000 # 5 hours
 
     - name: Benchmark pgvector hnsw indexing
       uses: ./.github/actions/run-python-test-set
