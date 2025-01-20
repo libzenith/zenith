@@ -5,6 +5,39 @@
 # We use Debian as the base for all the steps. The production images use Debian bookworm
 # for v17, and Debian bullseye for older PostgreSQL versions.
 #
+# This same Dockerfile can be used to build several kinds of target images:
+#
+# Target: compute-node
+# --------------------
+#
+# Contains compute_ctl, Postgres, extensions, pgbouncer, and metrics exporters.
+# Everything that's needed to provide the user-visible services of a compute
+# endpoint. The target produces a docker image that's suitable for running
+# compute_ctl in a docker container (compute_ctl is set as the entrypoint).  The
+# other services like pgbouncer are not launched when you execute this
+# container, although the binaries are included in the image.
+#
+# When building old-style VM images with vm-builder, this is the input to
+# vm-builder. See the vm-compute-node-image job in the build_and_test.yml github
+# workflow for how that's done. For backwards-compatibility with the github
+# action and any other scripts lying around, this is the default target.
+#
+# Target: compute-node-bootable
+# -----------------------------
+#
+# Produces an image with systemd, and systemd configuration to run all the
+# services. This is suitable for running in a VM. For testing, it can also be
+# launched in a docker container with:
+#
+#  docker run --name=compute-node  --privileged neondatabase/compute-node-bootable:local /sbin/init
+#
+# Target: compute-node-neonvm-payload
+# -----------------------------------
+#
+# Processes 'compute-node-bootable' into a QCOW2 image, suitable for loading with
+# neonvm-guest
+#
+#
 # ## Intermediary layers
 #
 # build-tools:   This contains Rust compiler toolchain and other tools needed at compile
@@ -62,19 +95,6 @@
 # The configuration files for the metrics exporters are under etc/ directory. We use
 # a templating system to handle variations between different PostgreSQL versions,
 # building slightly different config files for each PostgreSQL version.
-#
-#
-# ## Final image
-#
-# The final image puts together the PostgreSQL binaries (pg-build), the compute tools
-# (compute-tools), all the extensions (all-extensions) and the extra components into
-# one image.
-#
-# VM image: The final image built by this dockerfile isn't actually the final image that
-# we use in computes VMs. There's an extra step that adds some files and makes other
-# small adjustments, and builds the QCOV2 filesystem image suitable for using in a VM.
-# That step is done by the 'vm-builder' tool. See the vm-compute-node-image job in the
-# build_and_test.yml github workflow for how that's done.
 
 ARG PG_VERSION
 ARG REPOSITORY=neondatabase
@@ -1776,11 +1796,14 @@ ENV PGDATABASE=postgres
 
 #########################################################################################
 #
-# Final layer
-# Put it all together into the final image
+# Target: compute-node
+#
+# Put it all together into the final 'compute-node' image. It can be executed directly
+# with docker, to run the 'compute_ctl'. The other services will not be launched in
+# that case.
 #
 #########################################################################################
-FROM debian:$DEBIAN_FLAVOR
+FROM debian:$DEBIAN_FLAVOR as compute-node-build
 ARG DEBIAN_VERSION
 
 # Use strict mode for bash to catch errors early
@@ -1837,7 +1860,6 @@ RUN apt update && \
         procps \
         ca-certificates \
         $VERSION_INSTALLS && \
-    apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 
 # Add user postgres
@@ -1884,6 +1906,89 @@ COPY --from=sql_exporter_preprocessor --chmod=0644 /home/nonroot/compute/etc/neo
 # Make the libraries we built available
 RUN echo '/usr/local/lib' >> /etc/ld.so.conf && /sbin/ldconfig
 
+FROM compute-node-build as compute-node
+ARG DEBIAN_VERSION
+
+RUN apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# If this image is executed as a stand-alone docker container, these are used.
 ENV LANG=en_US.utf8
 USER postgres
 ENTRYPOINT ["/usr/local/bin/compute_ctl"]
+
+#########################################################################################
+#
+# Target: compute-node-bootable
+#
+# A "bootable" image which includes systemd, configured to launch all the services.
+#
+# For testing purposes, this can be run directly with docker:
+#
+#  docker run --name=compute-node  --privileged neondatabase/compute-node-bootable:local /sbin/init
+#
+#########################################################################################
+
+FROM compute-node-build as compute-node-bootable
+
+# dbus is required so that you can "machinectl shell" into this when run in an systemd-nspawn
+# container
+RUN apt install --no-install-recommends -y \
+    systemd \
+    systemd-sysv \
+    dbus && \
+    apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+## copy systemd unit files for the services and enable them
+COPY compute/etc/systemd/ /etc/systemd
+RUN systemctl enable \
+    systemd-networkd.service \
+    pgbouncer \
+    postgres_exporter sql_exporter sql_exporter-autoscaling \
+    local_proxy \
+    compute_ctl
+
+ENTRYPOINT ["/sbin/init"]
+
+#########################################################################################
+#
+# Target: compute-node-neonvm-payload
+#
+# Contains 'compute-node-bootable', as a QCOW2 disk image, suitable for booting with
+# neonvm-guest
+#
+#########################################################################################
+
+# Wrap the same in a QCOW2 image
+FROM debian:bookworm-slim AS compute-node-neonvm-payload-build
+ARG DISK_SIZE=5G
+# tools for qemu disk creation. procps is for sysctl, needed because neonvm-controller
+# launches this in an init container that runs sysctl.
+RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
+    qemu-utils \
+    e2fsprogs \
+    procps
+
+COPY --from=compute-node-bootable / /rootdisk/
+
+RUN set -e \
+    && mkfs.ext4 -L neonvm-payload -d /rootdisk /disk.raw ${DISK_SIZE} \
+    && qemu-img convert -f raw -O qcow2 -o cluster_size=2M,lazy_refcounts=on /disk.raw /neonvm-payload.qcow2
+
+FROM debian:bookworm-slim AS compute-node-neonvm-payload
+ARG DISK_SIZE=5G
+ARG DISK_SIZE=5G
+# procps is for sysctl, needed because neonvm-controller launches this in an init
+# container that runs sysctl.
+RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
+    procps
+
+COPY --from=compute-node-neonvm-payload-build /neonvm-payload.qcow2 /
+
+RUN apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+#########################################################################################
+#
+# make 'compute-node' the default target
+#
+#########################################################################################
+FROM compute-node

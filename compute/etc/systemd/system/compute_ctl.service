@@ -1,0 +1,15 @@
+[Unit]
+Description=Neon PostgreSQL launcher tool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=postgres
+# neonvm-runner mounts and populates this directory based on the k8s VM spec
+EnvironmentFile=/neonvm/runtime/command.env
+ExecStart=/usr/local/bin/compute_ctl $COMPUTE_CTL_ARGS
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
