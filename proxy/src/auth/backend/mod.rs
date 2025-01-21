@@ -305,10 +305,7 @@ async fn auth_quirks(
             None => return Err(AuthError::MissingEndpointName),
             Some(ConnectionInfoExtra::Aws { vpce_id }) => {
                 // Convert the vcpe_id to a string
-                match String::from_utf8(vpce_id.to_vec()) {
-                    Ok(s) => s,
-                    Err(_e) => String::new(),
-                }
+                String::from_utf8(vpce_id.to_vec()).unwrap_or_default()
             }
             Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
         };
@@ -513,12 +510,12 @@ impl BackendIpAllowlist for Backend<'_, ()> {
         user_info: &ComputeUserInfo,
     ) -> auth::Result<Vec<auth::IpPattern>> {
         let auth_data = match self {
-            Self::ControlPlane(api, ()) => api.get_allowed_ips_and_secret(ctx, user_info).await,
-            Self::Local(_) => Ok((Cached::new_uncached(Arc::new(vec![])), None)),
+            Self::ControlPlane(api, ()) => api.get_allowed_ips(ctx, user_info).await,
+            Self::Local(_) => Ok(Cached::new_uncached(Arc::new(vec![]))),
         };
 
         auth_data
-            .map(|(ips, _)| ips.as_ref().clone())
+            .map(|ips| ips.as_ref().clone())
             .map_err(|e| e.into())
     }
 }

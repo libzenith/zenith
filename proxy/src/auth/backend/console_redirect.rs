@@ -92,9 +92,9 @@ impl BackendIpAllowlist for ConsoleRedirectBackend {
         user_info: &ComputeUserInfo,
     ) -> auth::Result<Vec<auth::IpPattern>> {
         self.api
-            .get_allowed_ips_and_secret(ctx, user_info)
+            .get_allowed_ips(ctx, user_info)
             .await
-            .map(|(ips, _)| ips.as_ref().clone())
+            .map(|ips| ips.as_ref().clone())
             .map_err(|e| e.into())
     }
 }

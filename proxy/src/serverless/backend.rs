@@ -77,10 +77,7 @@ impl PoolingBackend {
                 None => String::new(),
                 Some(ConnectionInfoExtra::Aws { vpce_id }) => {
                     // Convert the vcpe_id to a string
-                    match String::from_utf8(vpce_id.to_vec()) {
-                        Ok(s) => s,
-                        Err(_e) => String::new(),
-                    }
+                    String::from_utf8(vpce_id.to_vec()).unwrap_or_default()
                 }
                 Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
             };
