@@ -1484,7 +1484,7 @@ ARG PG_VERSION
 COPY --from=postgis-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=postgis-build /sfcgal/* /
 COPY --from=pgrouting-build /usr/local/pgsql/ /usr/local/pgsql/
-#COPY --from=plv8-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=plv8-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=h3-pg-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=h3-pg-build /h3/usr /
 COPY --from=postgresql-unit-build /usr/local/pgsql/ /usr/local/pgsql/
