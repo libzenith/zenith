@@ -2,14 +2,11 @@
 set -x
 
 cd /ext-src || exit 2
-FAILED=
+export FAILED_FILE=/tmp/failed
+touch ${FAILED_FILE}
 LIST=$( (echo -e "${SKIP//","/"\n"}"; ls -d -- *-src) | sort | uniq -u)
-for d in ${LIST}
-do
-       [ -d "${d}" ] || continue
-    psql -c "select 1" >/dev/null || break
-       USE_PGXS=1 make -C "${d}" installcheck || FAILED="${d} ${FAILED}"
-done
+parallel -j3 '[ -d {} ] || exit 0; if ! psql -c "select 1" >/dev/null; then {echo {} >> $FAILED_FILE; exit 1; fi ; USE_PGXS=1 PGHOST=pcompute{%} make -C {} installcheck || echo {} >> $FAILED_FILE;' ::: ${LIST}
+FAILED=$(cat $FAILED_FILE)
 [ -z "${FAILED}" ] && exit 0
-echo "${FAILED}"
+echo ${FAILED}
 exit 1

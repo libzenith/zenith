@@ -25,9 +25,9 @@ export http_proxy https_proxy
 cleanup() {
     echo "show container information"
     docker ps
-    docker compose --profile test-extensions -f $COMPOSE_FILE logs
+    docker compose --profile parallel-test-extensions -f $COMPOSE_FILE logs
     echo "stop containers..."
-    docker compose --profile test-extensions -f $COMPOSE_FILE down
+    docker compose --profile parallel-test-extensions -f $COMPOSE_FILE down
 }
 
 for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
@@ -41,7 +41,7 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
       mv $SPEC_PATH/spec.json $SPEC_PATH/spec.bak
       jq '.cluster.settings += [{"name": "session_preload_libraries","value": "anon","vartype": "string"}]' "${SPEC_PATH}/spec.bak" > "${SPEC_PATH}/spec.json"
     fi
-    PG_VERSION=$pg_version PG_TEST_VERSION=$PG_TEST_VERSION docker compose --profile test-extensions -f $COMPOSE_FILE up --build -d
+    PG_VERSION=$pg_version PG_TEST_VERSION=$PG_TEST_VERSION docker compose --profile parallel-test-extensions -f $COMPOSE_FILE up --build -d
 
     echo "wait until the compute is ready. timeout after 60s. "
     cnt=0
@@ -53,7 +53,7 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
             cleanup
             exit 1
         fi
-        if docker compose --profile test-extensions -f $COMPOSE_FILE logs "compute_is_ready" | grep -q "accepting connections"; then
+        if docker compose --profile parallel-test-extensions -f $COMPOSE_FILE logs "pcomputes_are_ready" | grep -q "All pcomputes are started"; then
             echo "OK. The compute is ready to connect."
             echo "execute simple queries."
             docker exec $COMPUTE_CONTAINER_NAME /bin/bash -c "psql $PSQL_OPTION"
@@ -62,14 +62,16 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
     done
 
     if [ $pg_version -ge 16 ]; then
-        echo Enabling trust connection
-        docker exec $COMPUTE_CONTAINER_NAME bash -c "sed -i '\$d' /var/db/postgres/compute/pg_hba.conf && echo -e 'host\t all\t all\t all\t trust' >> /var/db/postgres/compute/pg_hba.conf && psql $PSQL_OPTION -c 'select pg_reload_conf()' "
-        echo Adding postgres role
-        docker exec $COMPUTE_CONTAINER_NAME psql $PSQL_OPTION -c "CREATE ROLE postgres SUPERUSER LOGIN"
-        # This is required for the pg_hint_plan test, to prevent flaky log message causing the test to fail
-        # It cannot be moved to Dockerfile now because the database directory is created after the start of the container
-        echo Adding dummy config
-        docker exec $COMPUTE_CONTAINER_NAME touch /var/db/postgres/compute/compute_ctl_temp_override.conf
+        for i in {1..3}; do
+          echo Enabling trust connection
+          docker compose exec pcompute${i} bash -c "sed -i '\$d' /var/db/postgres/compute/pg_hba.conf && echo -e 'host\t all\t all\t all\t trust' >> /var/db/postgres/compute/pg_hba.conf && psql $PSQL_OPTION -c 'select pg_reload_conf()' "
+          echo Adding postgres role
+          docker compose exec pcompute${i} psql $PSQL_OPTION -c "CREATE ROLE postgres SUPERUSER LOGIN"
+          # This is required for the pg_hint_plan test, to prevent flaky log message causing the test to fail
+          # It cannot be moved to Dockerfile now because the database directory is created after the start of the container
+          echo Adding dummy config
+          docker compose exec pcompute${i} touch /var/db/postgres/compute/compute_ctl_temp_override.conf
+        done
         # This block is required for the pg_anon extension test.
         # The test assumes that it is running on the same host with the postgres engine.
         # In our case it's not true, that's why we are copying files to the compute node
@@ -78,14 +80,20 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
         if [ $pg_version -ne 17 ]; then
           docker cp $TEST_CONTAINER_NAME:/ext-src/pg_anon-src/data $TMPDIR/data
           echo -e '1\t too \t many \t tabs' > $TMPDIR/data/bad.csv
-          docker cp $TMPDIR/data $COMPUTE_CONTAINER_NAME:/tmp/tmp_anon_alternate_data
+          for i in {1..3}; do
+            docker compose cp $TMPDIR/data pcompute${i}:/tmp/tmp_anon_alternate_data
+          done
         rm -rf $TMPDIR
         fi
         TMPDIR=$(mktemp -d)
         # The following block does the same for the pg_hintplan test
         docker cp $TEST_CONTAINER_NAME:/ext-src/pg_hint_plan-src/data $TMPDIR/data
-        docker cp $TMPDIR/data $COMPUTE_CONTAINER_NAME:/ext-src/pg_hint_plan-src/
+        for i in {1..3}; do
+          docker compose cp $TMPDIR/data pcompute${i}:/ext-src/pg_hint_plan-src/
+        done
         rm -rf $TMPDIR
+        # Add packages
+        docker exec $TEST_CONTAINER_NAME bash -c "apt update; apt -y install parallel"
         # We are running tests now
         if docker exec -e SKIP=timescaledb-src,rdkit-src,postgis-src,pgx_ulid-src,pgtap-src,pg_tiktoken-src,pg_jsonschema-src,pg_graphql-src,kq_imcx-src,wal2json_2_5-src \
             $TEST_CONTAINER_NAME /run-tests.sh | tee testout.txt
