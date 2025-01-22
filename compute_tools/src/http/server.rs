@@ -16,21 +16,29 @@ use axum::{
 use http::StatusCode;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
-use tower_http::{request_id::PropagateRequestIdLayer, trace::TraceLayer};
+use tower_http::{
+    auth::AsyncRequireAuthorizationLayer, request_id::PropagateRequestIdLayer, trace::TraceLayer,
+};
 use tracing::{debug, error, info, Span};
 use uuid::Uuid;
 
-use super::routes::{
-    check_writability, configure, database_schema, dbs_and_roles, extension_server, extensions,
-    grants, insights, metrics, metrics_json, status, terminate,
+use super::{
+    headers::X_REQUEST_ID,
+    middleware::authorize::Authorize,
+    routes::{
+        check_writability, configure, database_schema, dbs_and_roles, extension_server, extensions,
+        grants, insights, metrics, metrics_json, status, terminate,
+    },
 };
 use crate::compute::ComputeNode;
 
-async fn handle_404() -> Response {
-    StatusCode::NOT_FOUND.into_response()
+async fn handle_404() -> impl IntoResponse {
+    StatusCode::NOT_FOUND
 }
 
-const X_REQUEST_ID: &str = "x-request-id";
+async fn handle_405() -> impl IntoResponse {
+    StatusCode::METHOD_NOT_ALLOWED
+}
 
 /// This middleware function allows compute_ctl to generate its own request ID
 /// if one isn't supplied. The control plane will always send one as a UUID. The
@@ -48,7 +56,30 @@ async fn maybe_add_request_id_header(mut request: Request, next: Next) -> Respon
 /// Run the HTTP server and wait on it forever.
 #[tokio::main]
 async fn serve(port: u16, compute: Arc<ComputeNode>) {
-    let mut app = Router::new()
+    let jwks = {
+        let state = compute.state.lock().unwrap();
+        let spec = &state.pspec.as_ref().unwrap().spec;
+
+        spec.jwks.clone()
+    };
+
+    // If you are wondering whether or not to make the route unauthorized,
+    // don't. The Authorization middleware on the authorized router will bypass
+    // any requests from the loopback interface.
+    let mut unauthorized_router = Router::<Arc<ComputeNode>>::new()
+        .route("/extensions", post(extensions::install_extension))
+        .route("/grants", post(grants::add_grant))
+        .route("/metrics", get(metrics::get_metrics));
+
+    // Add in any testing support
+    if cfg!(feature = "testing") {
+        use super::routes::failpoints;
+
+        unauthorized_router =
+            unauthorized_router.route("/failpoints", post(failpoints::configure_failpoints))
+    }
+
+    let mut authorized_router = Router::<Arc<ComputeNode>>::new()
         .route("/check_writability", post(check_writability::is_writable))
         .route("/configure", post(configure::configure))
         .route("/database_schema", get(database_schema::get_schema_dump))
@@ -57,14 +88,20 @@ async fn serve(port: u16, compute: Arc<ComputeNode>) {
             "/extension_server/{*filename}",
             post(extension_server::download_extension),
         )
-        .route("/extensions", post(extensions::install_extension))
-        .route("/grants", post(grants::add_grant))
         .route("/insights", get(insights::get_insights))
-        .route("/metrics", get(metrics::get_metrics))
         .route("/metrics.json", get(metrics_json::get_metrics))
         .route("/status", get(status::get_status))
-        .route("/terminate", post(terminate::terminate))
+        .route("/terminate", post(terminate::terminate));
+
+    if jwks.is_some() {
+        authorized_router = authorized_router.layer(AsyncRequireAuthorizationLayer::new(
+            Authorize::new(compute.compute_id.clone(), jwks.clone().unwrap()),
+        ));
+    }
+
+    let main_router = Router::new()
         .fallback(handle_404)
+        .method_not_allowed_fallback(handle_405)
         .layer(
             ServiceBuilder::new()
                 // Add this middleware since we assume the request ID exists
@@ -105,14 +142,9 @@ async fn serve(port: u16, compute: Arc<ComputeNode>) {
                 )
                 .layer(PropagateRequestIdLayer::x_request_id()),
         )
+        .merge(authorized_router)
+        .merge(unauthorized_router)
         .with_state(compute);
-
-    // Add in any testing support
-    if cfg!(feature = "testing") {
-        use super::routes::failpoints;
-
-        app = app.route("/failpoints", post(failpoints::configure_failpoints))
-    }
 
     // This usually binds to both IPv4 and IPv6 on Linux, see
     // https://github.com/rust-lang/rust/pull/34440 for more information
@@ -134,7 +166,12 @@ async fn serve(port: u16, compute: Arc<ComputeNode>) {
         info!("compute_ctl HTTP server listening on port {}", port);
     }
 
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(
+        listener,
+        main_router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    {
         error!("compute_ctl HTTP server error: {}", e);
     }
 }
