@@ -559,6 +559,13 @@ impl JobGenerator<PendingDownload, RunningDownload, CompleteDownload, DownloadCo
     }
 }
 
+enum LayerAction {
+    Download,
+    NoAction,
+    Skip,
+    Touch,
+}
+
 /// This type is a convenience to group together the various functions involved in
 /// freshening a secondary tenant.
 struct TenantDownloader<'a> {
@@ -1008,67 +1015,15 @@ impl<'a> TenantDownloader<'a> {
                 return (Err(UpdateError::Restart), touched);
             }
 
-            // Existing on-disk layers: just update their access time.
-            if let Some(on_disk) = timeline_state.on_disk_layers.get(&layer.name) {
-                tracing::debug!("Layer {} is already on disk", layer.name);
-
-                if cfg!(debug_assertions) {
-                    // Debug for https://github.com/neondatabase/neon/issues/6966: check that the files we think
-                    // are already present on disk are really there.
-                    match tokio::fs::metadata(&on_disk.local_path).await {
-                        Ok(meta) => {
-                            tracing::debug!(
-                                "Layer {} present at {}, size {}",
-                                layer.name,
-                                on_disk.local_path,
-                                meta.len(),
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Layer {} not found at {} ({})",
-                                layer.name,
-                                on_disk.local_path,
-                                e
-                            );
-                            debug_assert!(false);
-                        }
-                    }
-                }
-
-                if on_disk.metadata != layer.metadata || on_disk.access_time != layer.access_time {
-                    // We already have this layer on disk.  Update its access time.
-                    tracing::debug!(
-                        "Access time updated for layer {}: {} -> {}",
-                        layer.name,
-                        strftime(&on_disk.access_time),
-                        strftime(&layer.access_time)
-                    );
-                    touched.push(layer);
-                }
-                continue;
-            } else {
-                tracing::debug!("Layer {} not present on disk yet", layer.name);
-            }
-
-            // Eviction: if we evicted a layer, then do not re-download it unless it was accessed more
-            // recently than it was evicted.
-            if let Some(evicted_at) = timeline_state.evicted_at.get(&layer.name) {
-                if &layer.access_time > evicted_at {
-                    tracing::info!(
-                        "Re-downloading evicted layer {}, accessed at {}, evicted at {}",
-                        layer.name,
-                        strftime(&layer.access_time),
-                        strftime(evicted_at)
-                    );
-                } else {
-                    tracing::trace!(
-                        "Not re-downloading evicted layer {}, accessed at {}, evicted at {}",
-                        layer.name,
-                        strftime(&layer.access_time),
-                        strftime(evicted_at)
-                    );
+            match self.layer_action(&timeline_state, &layer).await {
+                LayerAction::Download => (),
+                LayerAction::NoAction => continue,
+                LayerAction::Skip => {
                     self.skip_layer(layer);
+                    continue;
+                }
+                LayerAction::Touch => {
+                    touched.push(layer);
                     continue;
                 }
             }
@@ -1089,6 +1044,86 @@ impl<'a> TenantDownloader<'a> {
         }
 
         (Ok(()), touched)
+    }
+
+    async fn layer_action(
+        &self,
+        timeline_state: &SecondaryDetailTimeline,
+        layer: &HeatMapLayer,
+    ) -> LayerAction {
+        // Existing on-disk layers: just update their access time.
+        if let Some(on_disk) = timeline_state.on_disk_layers.get(&layer.name) {
+            tracing::debug!("Layer {} is already on disk", layer.name);
+
+            if cfg!(debug_assertions) {
+                // Debug for https://github.com/neondatabase/neon/issues/6966: check that the files we think
+                // are already present on disk are really there.
+                match tokio::fs::metadata(&on_disk.local_path).await {
+                    Ok(meta) => {
+                        tracing::debug!(
+                            "Layer {} present at {}, size {}",
+                            layer.name,
+                            on_disk.local_path,
+                            meta.len(),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Layer {} not found at {} ({})",
+                            layer.name,
+                            on_disk.local_path,
+                            e
+                        );
+                        debug_assert!(false);
+                    }
+                }
+            }
+
+            if on_disk.metadata.generation_file_size() != on_disk.metadata.generation_file_size() {
+                tracing::info!(
+                    "Re-downloading layer {} with changed size or generation: {:?}->{:?}",
+                    layer.name,
+                    on_disk.metadata.generation_file_size(),
+                    on_disk.metadata.generation_file_size()
+                );
+                return LayerAction::Download;
+            }
+            if on_disk.metadata != layer.metadata || on_disk.access_time != layer.access_time {
+                // We already have this layer on disk.  Update its access time.
+                tracing::debug!(
+                    "Access time updated for layer {}: {} -> {}",
+                    layer.name,
+                    strftime(&on_disk.access_time),
+                    strftime(&layer.access_time)
+                );
+                return LayerAction::Touch;
+            }
+            return LayerAction::NoAction;
+        } else {
+            tracing::debug!("Layer {} not present on disk yet", layer.name);
+        }
+
+        // Eviction: if we evicted a layer, then do not re-download it unless it was accessed more
+        // recently than it was evicted.
+        if let Some(evicted_at) = timeline_state.evicted_at.get(&layer.name) {
+            if &layer.access_time > evicted_at {
+                tracing::info!(
+                    "Re-downloading evicted layer {}, accessed at {}, evicted at {}",
+                    layer.name,
+                    strftime(&layer.access_time),
+                    strftime(evicted_at)
+                );
+            } else {
+                tracing::trace!(
+                    "Not re-downloading evicted layer {}, accessed at {}, evicted at {}",
+                    layer.name,
+                    strftime(&layer.access_time),
+                    strftime(evicted_at)
+                );
+                return LayerAction::Skip;
+            }
+        }
+        LayerAction::Download
     }
 
     async fn download_timeline(
