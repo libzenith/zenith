@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::connection_with_credentials_provider::ConnectionWithCredentialsProvider;
 use crate::cache::project_info::ProjectInfoCache;
-use crate::intern::{ProjectIdInt, RoleNameInt, AccountIdInt};
+use crate::intern::{AccountIdInt, ProjectIdInt, RoleNameInt};
 use crate::metrics::{Metrics, RedisErrors, RedisEventsCount};
 
 const CPLANE_CHANNEL_NAME: &str = "neondb-proxy-ws-updates";
@@ -265,7 +265,7 @@ fn invalidate_cache<C: ProjectInfoCache>(cache: Arc<C>, msg: Notification) {
             .invalidate_role_secret_for_project(
                 password_update.project_id,
                 password_update.role_name,
-        ),
+            ),
         Notification::UnknownTopic => unreachable!(),
     }
 }

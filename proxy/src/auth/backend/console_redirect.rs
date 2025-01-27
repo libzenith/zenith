@@ -7,8 +7,8 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{info, info_span};
 
-use super::{ComputeCredentialKeys, ControlPlaneApi};
-use crate::auth::backend::{BackendIpAllowlist, ComputeUserInfo};
+use super::ComputeCredentialKeys;
+use crate::auth::backend::ComputeUserInfo;
 use crate::auth::IpPattern;
 use crate::cache::Cached;
 use crate::config::AuthenticationConfig;
@@ -84,24 +84,13 @@ pub(crate) fn new_psql_session_id() -> String {
     hex::encode(rand::random::<[u8; 8]>())
 }
 
-#[async_trait]
-impl BackendIpAllowlist for ConsoleRedirectBackend {
-    async fn get_allowed_ips(
-        &self,
-        ctx: &RequestContext,
-        user_info: &ComputeUserInfo,
-    ) -> auth::Result<Vec<auth::IpPattern>> {
-        self.api
-            .get_allowed_ips(ctx, user_info)
-            .await
-            .map(|ips| ips.as_ref().clone())
-            .map_err(|e| e.into())
-    }
-}
-
 impl ConsoleRedirectBackend {
     pub fn new(console_uri: reqwest::Url, api: cplane_proxy_v1::NeonControlPlaneClient) -> Self {
         Self { console_uri, api }
+    }
+
+    pub(crate) fn get_api(&self) -> &cplane_proxy_v1::NeonControlPlaneClient {
+        &self.api
     }
 
     pub(crate) async fn authenticate(

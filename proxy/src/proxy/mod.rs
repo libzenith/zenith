@@ -283,7 +283,8 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
                             cancel_key_data,
                             ctx,
                             config.authentication_config.ip_allowlist_check_enabled,
-                            auth_backend,
+                            config.authentication_config.is_vpc_acccess_proxy,
+                            auth_backend.get_api(),
                         )
                         .await
                         .inspect_err(|e | debug!(error = ?e, "cancel_session failed")).ok();

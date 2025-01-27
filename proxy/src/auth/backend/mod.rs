@@ -101,6 +101,13 @@ impl<T> Backend<'_, T> {
             Self::Local(l) => Backend::Local(MaybeOwned::Borrowed(l)),
         }
     }
+
+    pub(crate) fn get_api(&self) -> &ControlPlaneClient {
+        match self {
+            Self::ControlPlane(api, _) => api,
+            Self::Local(_) => panic!("Local backend has no API"),
+        }
+    }
 }
 
 impl<'a, T> Backend<'a, T> {
@@ -249,15 +256,6 @@ impl AuthenticationConfig {
     }
 }
 
-#[async_trait::async_trait]
-pub(crate) trait BackendIpAllowlist {
-    async fn get_allowed_ips(
-        &self,
-        ctx: &RequestContext,
-        user_info: &ComputeUserInfo,
-    ) -> auth::Result<Vec<auth::IpPattern>>;
-}
-
 /// True to its name, this function encapsulates our current auth trade-offs.
 /// Here, we choose the appropriate auth flow based on circumstances.
 ///
@@ -300,8 +298,8 @@ async fn auth_quirks(
         if access_blocks.vpc_access_blocked {
             return Err(AuthError::NetworkNotAllowed);
         }
-        let extra = ctx.extra();
-        let incoming_vpc_endpoint_id = match extra {
+
+        let incoming_vpc_endpoint_id = match ctx.extra() {
             None => return Err(AuthError::MissingEndpointName),
             Some(ConnectionInfoExtra::Aws { vpce_id }) => {
                 // Convert the vcpe_id to a string
@@ -499,24 +497,6 @@ impl Backend<'_, ComputeUserInfo> {
             }
             Self::Local(_) => Ok(Cached::new_uncached(AccessBlockerFlags::default())),
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl BackendIpAllowlist for Backend<'_, ()> {
-    async fn get_allowed_ips(
-        &self,
-        ctx: &RequestContext,
-        user_info: &ComputeUserInfo,
-    ) -> auth::Result<Vec<auth::IpPattern>> {
-        let auth_data = match self {
-            Self::ControlPlane(api, ()) => api.get_allowed_ips(ctx, user_info).await,
-            Self::Local(_) => Ok(Cached::new_uncached(Arc::new(vec![]))),
-        };
-
-        auth_data
-            .map(|ips| ips.as_ref().clone())
-            .map_err(|e| e.into())
     }
 }
 

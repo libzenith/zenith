@@ -10,10 +10,7 @@ pub struct RedisKVClient {
 }
 
 impl RedisKVClient {
-    pub fn new(
-        client: ConnectionWithCredentialsProvider,
-        info: &'static [RateBucketInfo],
-    ) -> Self {
+    pub fn new(client: ConnectionWithCredentialsProvider, info: &'static [RateBucketInfo]) -> Self {
         Self {
             client,
             limiter: GlobalRateLimiter::new(info.into()),
@@ -42,11 +39,7 @@ impl RedisKVClient {
             return Err(anyhow::anyhow!("Rate limit exceeded"));
         }
 
-        match self
-            .client
-            .hset(&key, &field, &value)
-            .await
-        {
+        match self.client.hset(&key, &field, &value).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 tracing::error!("failed to set a key-value pair: {e}");
