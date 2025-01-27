@@ -148,7 +148,7 @@ use super::config::TenantConf;
 use super::remote_timeline_client::index::IndexPart;
 use super::remote_timeline_client::RemoteTimelineClient;
 use super::secondary::heatmap::{HeatMapLayer, HeatMapTimeline};
-use super::storage_layer::{LayerFringe, LayerVisibilityHint, ReadableLayer};
+use super::storage_layer::{LayerFringe, LayerId, LayerVisibilityHint, ReadableLayer};
 use super::upload_queue::NotInitialized;
 use super::GcError;
 use super::{
@@ -598,6 +598,49 @@ impl From<layer_manager::Shutdown> for GetVectoredError {
     }
 }
 
+pub struct ReadPath {
+    keyspace: KeySpace,
+    lsn: Lsn,
+    path: Vec<(LayerId, KeySpace, Range<Lsn>)>,
+}
+
+impl ReadPath {
+    pub fn new(keyspace: KeySpace, lsn: Lsn) -> Self {
+        Self {
+            keyspace,
+            lsn,
+            path: Vec::new(),
+        }
+    }
+
+    pub fn record_read_op(
+        &mut self,
+        layer_to_read: &ReadableLayer,
+        keyspace_to_read: &KeySpace,
+        lsn_range: &Range<Lsn>,
+    ) {
+        self.path.push((
+            layer_to_read.id(),
+            keyspace_to_read.clone(),
+            lsn_range.clone(),
+        ));
+    }
+}
+
+impl std::fmt::Display for ReadPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Read path for {} at lsn {}:", self.keyspace, self.lsn)?;
+        for (idx, (layer_id, keyspace, lsn_range)) in self.path.iter().enumerate() {
+            writeln!(
+                f,
+                "{}: {} {}..{} {}",
+                idx, layer_id, lsn_range.start, lsn_range.end, keyspace
+            )?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(thiserror::Error)]
 pub struct MissingKeyError {
     key: Key,
@@ -605,6 +648,8 @@ pub struct MissingKeyError {
     cont_lsn: Lsn,
     request_lsn: Lsn,
     ancestor_lsn: Option<Lsn>,
+    /// Debug information about the read path if there's an error
+    read_path: Option<ReadPath>,
     backtrace: Option<std::backtrace::Backtrace>,
 }
 
@@ -621,8 +666,13 @@ impl std::fmt::Display for MissingKeyError {
             "could not find data for key {} (shard {:?}) at LSN {}, request LSN {}",
             self.key, self.shard, self.cont_lsn, self.request_lsn
         )?;
+
         if let Some(ref ancestor_lsn) = self.ancestor_lsn {
             write!(f, ", ancestor {}", ancestor_lsn)?;
+        }
+
+        if let Some(ref read_path) = self.read_path {
+            write!(f, "\n{}", read_path)?;
         }
 
         if let Some(ref backtrace) = self.backtrace {
@@ -1027,6 +1077,7 @@ impl Timeline {
                 request_lsn: lsn,
                 ancestor_lsn: None,
                 backtrace: None,
+                read_path: None,
             })),
         }
     }
@@ -3319,6 +3370,12 @@ impl Timeline {
 
         let mut cont_lsn = Lsn(request_lsn.0 + 1);
 
+        let mut read_path = if cfg!(feature = "testing") || cfg!(debug_assertions) {
+            Some(ReadPath::new(keyspace.clone(), request_lsn))
+        } else {
+            None
+        };
+
         let missing_keyspace = loop {
             if self.cancel.is_cancelled() {
                 return Err(GetVectoredError::Cancelled);
@@ -3334,6 +3391,7 @@ impl Timeline {
                 reconstruct_state,
                 &self.cancel,
                 ctx,
+                &mut read_path,
             )
             .await?;
 
@@ -3408,6 +3466,7 @@ impl Timeline {
                 request_lsn,
                 ancestor_lsn: Some(timeline.ancestor_lsn),
                 backtrace: None,
+                read_path,
             }));
         }
 
@@ -3437,6 +3496,7 @@ impl Timeline {
         reconstruct_state: &mut ValuesReconstructState,
         cancel: &CancellationToken,
         ctx: &RequestContext,
+        read_path: &mut Option<ReadPath>,
     ) -> Result<TimelineVisitOutcome, GetVectoredError> {
         let mut unmapped_keyspace = keyspace.clone();
         let mut fringe = LayerFringe::new();
@@ -3516,6 +3576,9 @@ impl Timeline {
             }
 
             if let Some((layer_to_read, keyspace_to_read, lsn_range)) = fringe.next_layer() {
+                if let Some(read_path) = read_path {
+                    read_path.record_read_op(&layer_to_read, &keyspace_to_read, &lsn_range);
+                }
                 let next_cont_lsn = lsn_range.start;
                 layer_to_read
                     .get_values_reconstruct_data(
