@@ -33,6 +33,7 @@ use utils::sync::gate::GateGuard;
 
 use utils::lsn::Lsn;
 
+pub use batch_split_writer::{BatchLayerWriter, SplitDeltaLayerWriter, SplitImageLayerWriter};
 pub use delta_layer::{DeltaLayer, DeltaLayerWriter, ValueRef};
 pub use image_layer::{ImageLayer, ImageLayerWriter};
 pub use inmemory_layer::InMemoryLayer;
