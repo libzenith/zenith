@@ -16,6 +16,9 @@ defaults:
   run:
     shell: bash -euxo pipefail {0}
 
+# No permission for GITHUB_TOKEN by default; the **minimal required** set of permissions should be granted in each job.
+permissions: {}
+
 jobs:
   check-codestyle-rust:
     strategy:
@@ -89,3 +92,38 @@ jobs:
       - name: Check rust licenses/bans/advisories/sources
         if: ${{ !cancelled() }}
         run: cargo deny check --hide-inclusion-graph
+
+      # # To check diesel schema, we need any version of Postgres, so get it from build artifacts
+      # - name: Download Latest Neon artifact
+      #   if: ${{ !cancelled() }}
+      #   uses: ./.github/actions/download
+      #   with:
+      #     name: neon-${{ runner.os }}-${{ runner.arch }}-release-artifact
+      #     path: /tmp/neon/
+      #     prefix: latest
+      #     aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+
+      - name: Compile required thing
+        run: |
+          make postgres-v16 -j$(nproc)
+          make neon -j$(nproc)
+
+      - name: Check diesel schema
+        if: ${{ !cancelled() }}
+        env:
+          # POSTGRES_DISTRIB_DIR: /tmp/neon/pg_install
+          DATABASE_URL: postgresql://localhost:1235/storage_controller
+        run: |
+          export LD_LIBRARY_PATH=${POSTGRES_DISTRIB_DIR}/v16/lib
+
+          cargo neon init
+          cargo neon storage_controller start
+
+          diesel print-schema > storage_controller/src/schema.rs
+
+          if [ -n "$(git diff storage_controller/src/schema.rs)" ]; then
+            echo >&2 "Uncommitted changes in diesel schema"
+
+            git diff .
+            exit 1
+          fi

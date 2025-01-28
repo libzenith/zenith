@@ -251,6 +251,7 @@ ARG CARGO_HAKARI_VERSION=0.9.33
 ARG CARGO_DENY_VERSION=0.16.2
 ARG CARGO_HACK_VERSION=0.6.33
 ARG CARGO_NEXTEST_VERSION=0.9.85
+ARG CARGO_DIESEL_CLI_VERSION=2.2.6
 RUN curl -sSO https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init && whoami && \
 	chmod +x rustup-init && \
 	./rustup-init -y --default-toolchain ${RUSTC_VERSION} && \
@@ -264,6 +265,8 @@ RUN curl -sSO https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux
     cargo install cargo-deny --locked --version ${CARGO_DENY_VERSION} && \
     cargo install cargo-hack          --version ${CARGO_HACK_VERSION} && \
     cargo install cargo-nextest       --version ${CARGO_NEXTEST_VERSION} && \
+    cargo install diesel_cli          --version ${CARGO_DIESEL_CLI_VERSION} \
+                                      --features postgres-bundled --no-default-features && \
     rm -rf /home/nonroot/.cargo/registry && \
     rm -rf /home/nonroot/.cargo/git
 
