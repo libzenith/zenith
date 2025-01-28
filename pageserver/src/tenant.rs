@@ -5467,6 +5467,7 @@ pub(crate) mod harness {
                 compaction_algorithm: Some(tenant_conf.compaction_algorithm),
                 l0_flush_delay_threshold: tenant_conf.l0_flush_delay_threshold,
                 l0_flush_stall_threshold: tenant_conf.l0_flush_stall_threshold,
+                l0_flush_wait_upload: Some(tenant_conf.l0_flush_wait_upload),
                 gc_horizon: Some(tenant_conf.gc_horizon),
                 gc_period: Some(tenant_conf.gc_period),
                 image_creation_threshold: Some(tenant_conf.image_creation_threshold),

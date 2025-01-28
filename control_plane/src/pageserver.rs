@@ -357,6 +357,11 @@ impl PageServerNode {
                 .map(|x| x.parse::<usize>())
                 .transpose()
                 .context("Failed to parse 'l0_flush_delay_threshold' as an integer")?,
+            l0_flush_wait_upload: settings
+                .remove("l0_flush_wait_upload")
+                .map(|x| x.parse::<bool>())
+                .transpose()
+                .context("Failed to parse 'l0_flush_wait_upload' as a boolean")?,
             l0_flush_stall_threshold: settings
                 .remove("l0_flush_stall_threshold")
                 .map(|x| x.parse::<usize>())

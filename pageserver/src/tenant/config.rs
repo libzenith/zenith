@@ -291,6 +291,10 @@ pub struct TenantConfOpt {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
+    pub l0_flush_wait_upload: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub gc_horizon: Option<u64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -408,6 +412,9 @@ impl TenantConfOpt {
             l0_flush_stall_threshold: self
                 .l0_flush_stall_threshold
                 .or(global_conf.l0_flush_stall_threshold),
+            l0_flush_wait_upload: self
+                .l0_flush_wait_upload
+                .unwrap_or(global_conf.l0_flush_wait_upload),
             gc_horizon: self.gc_horizon.unwrap_or(global_conf.gc_horizon),
             gc_period: self.gc_period.unwrap_or(global_conf.gc_period),
             image_creation_threshold: self
@@ -474,6 +481,7 @@ impl TenantConfOpt {
             mut compaction_algorithm,
             mut l0_flush_delay_threshold,
             mut l0_flush_stall_threshold,
+            mut l0_flush_wait_upload,
             mut gc_horizon,
             mut gc_period,
             mut image_creation_threshold,
@@ -518,6 +526,7 @@ impl TenantConfOpt {
         patch
             .l0_flush_stall_threshold
             .apply(&mut l0_flush_stall_threshold);
+        patch.l0_flush_wait_upload.apply(&mut l0_flush_wait_upload);
         patch.gc_horizon.apply(&mut gc_horizon);
         patch
             .gc_period
@@ -590,6 +599,7 @@ impl TenantConfOpt {
             compaction_algorithm,
             l0_flush_delay_threshold,
             l0_flush_stall_threshold,
+            l0_flush_wait_upload,
             gc_horizon,
             gc_period,
             image_creation_threshold,
@@ -649,6 +659,7 @@ impl From<TenantConfOpt> for models::TenantConfig {
             compaction_threshold: value.compaction_threshold,
             l0_flush_delay_threshold: value.l0_flush_delay_threshold,
             l0_flush_stall_threshold: value.l0_flush_stall_threshold,
+            l0_flush_wait_upload: value.l0_flush_wait_upload,
             gc_horizon: value.gc_horizon,
             gc_period: value.gc_period.map(humantime),
             image_creation_threshold: value.image_creation_threshold,
