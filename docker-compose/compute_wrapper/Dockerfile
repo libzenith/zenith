@@ -12,6 +12,6 @@ RUN apt-get update &&       \
                        jq   \
                        netcat-openbsd
 #This is required for the pg_hintplan test
-RUN mkdir -p /ext-src/pg_hint_plan-src && chown postgres /ext-src/pg_hint_plan-src 
+RUN mkdir -p /ext-src/pg_hint_plan-src /postgres/contrib/file_fdw && chown postgres /ext-src/pg_hint_plan-src /postgres/contrib/file_fdw
 
 USER postgres

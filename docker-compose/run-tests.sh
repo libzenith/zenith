@@ -1,9 +1,11 @@
 #!/bin/bash
 set -x
 
-cd /ext-src || exit 2
+extdir=${1}
+
+cd "${extdir}" || exit 2
 FAILED=
-LIST=$( (echo -e "${SKIP//","/"\n"}"; ls -d -- *-src) | sort | uniq -u)
+LIST=$( (echo -e "${SKIP//","/"\n"}"; ls) | sort | uniq -u)
 for d in ${LIST}
 do
        [ -d "${d}" ] || continue

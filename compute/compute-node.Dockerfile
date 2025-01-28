@@ -1320,6 +1320,7 @@ FROM neon-pg-ext-build AS neon-pg-ext-test
 ARG PG_VERSION
 RUN mkdir /ext-src
 
+COPY --from=pg-build /postgres /postgres
 #COPY --from=postgis-build /postgis.tar.gz /ext-src/
 #COPY --from=postgis-build /sfcgal/* /usr
 COPY --from=plv8-build /plv8.tar.gz /ext-src/
