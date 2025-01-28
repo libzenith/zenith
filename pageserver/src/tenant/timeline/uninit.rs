@@ -143,12 +143,21 @@ impl<'t> UninitializedTimeline<'t> {
 
 impl Drop for UninitializedTimeline<'_> {
     fn drop(&mut self) {
-        if let Some((_, create_guard)) = self.raw_timeline.take() {
+        if let Some((timeline, create_guard)) = self.raw_timeline.take() {
             let _entered = info_span!("drop_uninitialized_timeline", tenant_id = %self.owning_tenant.tenant_shard_id.tenant_id, shard_id = %self.owning_tenant.tenant_shard_id.shard_slug(), timeline_id = %self.timeline_id).entered();
             // This is unusual, but can happen harmlessly if the pageserver is stopped while
             // creating a timeline.
             info!("Timeline got dropped without initializing, cleaning its files");
-            cleanup_timeline_directory(create_guard);
+
+            if timeline.gate.close_complete() {
+                cleanup_timeline_directory(create_guard);
+            } else {
+                // This is a bug: the timeline was left in a non-shut-down state while we were dropped.  We
+                // can't clean up its files because other tasks (e.g. layer flush task) may still be writing.
+                tracing::warn!(
+                    "Timeline was not shut down before dropping, cannot clean up its files"
+                );
+            }
         }
     }
 }

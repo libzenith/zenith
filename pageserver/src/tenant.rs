@@ -4969,9 +4969,46 @@ impl Tenant {
         // Flush loop needs to be spawned in order to be able to flush.
         unfinished_timeline.maybe_spawn_flush_loop();
 
+        match self
+            .bootstrap_timeline_io(
+                &tenant_shard_id,
+                &timeline_id,
+                unfinished_timeline,
+                &pgdata_path,
+                pgdata_lsn,
+                ctx,
+            )
+            .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                // Ensure partially created timeline is shut down, as UninitializedTimeline will
+                // try to clean up local storage.
+                unfinished_timeline.shutdown(ShutdownMode::Hard).await;
+                return Err(e);
+            }
+        };
+
+        let timeline = raw_timeline.finish_creation()?;
+
+        // Callers are responsible to wait for uploads to complete and for activating the timeline.
+        Ok(CreateTimelineResult::Created(timeline))
+    }
+
+    /// The fallible I/O part of bootstrapping a timeline -- writing layers and flushing them
+    /// to disk.
+    async fn bootstrap_timeline_io(
+        self: &Arc<Self>,
+        tenant_shard_id: &TenantShardId,
+        timeline_id: &TimelineId,
+        unfinished_timeline: &Timeline,
+        pgdata_path: &Utf8PathBuf,
+        pgdata_lsn: Lsn,
+        ctx: &RequestContext,
+    ) -> Result<(), CreateTimelineError> {
         import_datadir::import_timeline_from_postgres_datadir(
             unfinished_timeline,
-            &pgdata_path,
+            pgdata_path,
             pgdata_lsn,
             ctx,
         )
@@ -4995,12 +5032,7 @@ impl Tenant {
                 )
             })?;
 
-        // All done!
-        let timeline = raw_timeline.finish_creation()?;
-
-        // Callers are responsible to wait for uploads to complete and for activating the timeline.
-
-        Ok(CreateTimelineResult::Created(timeline))
+        Ok(())
     }
 
     fn build_timeline_remote_client(&self, timeline_id: TimelineId) -> RemoteTimelineClient {
@@ -5330,15 +5362,9 @@ impl Tenant {
         )
         .await
         {
-            None => {
-                Err(TenantManifestError::Cancelled)
-            }
-            Some(Err(_)) if self.cancel.is_cancelled() => {
-                Err(TenantManifestError::Cancelled)
-            }
-            Some(Err(e)) => {
-                Err(TenantManifestError::RemoteStorage(e))
-            },
+            None => Err(TenantManifestError::Cancelled),
+            Some(Err(_)) if self.cancel.is_cancelled() => Err(TenantManifestError::Cancelled),
+            Some(Err(e)) => Err(TenantManifestError::RemoteStorage(e)),
             Some(Ok(_)) => {
                 // Store the successfully uploaded manifest, so that future callers can avoid
                 // re-uploading the same thing.
