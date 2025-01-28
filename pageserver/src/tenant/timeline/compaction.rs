@@ -7,6 +7,7 @@
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::ops::{Deref, Range};
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::layer_manager::LayerManager;
 use super::{
@@ -47,6 +48,7 @@ use crate::tenant::timeline::{ImageLayerCreationOutcome, IoConcurrency};
 use crate::tenant::timeline::{Layer, ResidentLayer};
 use crate::tenant::{gc_block, DeltaLayer, MaybeOffloaded};
 use crate::virtual_file::{MaybeFatalIo, VirtualFile};
+use crate::LogIfSlowFutureExt;
 use pageserver_api::config::tenant_conf_defaults::{
     DEFAULT_CHECKPOINT_DISTANCE, DEFAULT_COMPACTION_THRESHOLD,
 };
@@ -676,6 +678,7 @@ impl Timeline {
                 options.flags,
                 ctx,
             )
+            .log_if_slow("compact_legacy_repartition", Duration::from_secs(30))
             .await
         {
             Ok(((dense_partitioning, sparse_partitioning), lsn)) => {
@@ -717,6 +720,10 @@ impl Timeline {
                             },
                             &image_ctx,
                         )
+                        .log_if_slow(
+                            "compact_legacy_create_image_layers",
+                            Duration::from_secs(120),
+                        )
                         .await?;
 
                     self.upload_new_image_layers(image_layers)?;
@@ -745,7 +752,9 @@ impl Timeline {
             // being potentially much longer.
             let rewrite_max = partition_count;
 
-            self.compact_shard_ancestors(rewrite_max, ctx).await?;
+            self.compact_shard_ancestors(rewrite_max, ctx)
+                .log_if_slow("compact_legacy_shard_ancestors", Duration::from_secs(300))
+                .await?;
         }
 
         Ok(has_pending_tasks)
@@ -1033,6 +1042,10 @@ impl Timeline {
                 &ctx,
             )
             .instrument(phase1_span)
+            .log_if_slow(
+                "compact_legacy_compact_level0_phase1",
+                Duration::from_secs(120),
+            )
             .await?
         };
 
@@ -1042,6 +1055,10 @@ impl Timeline {
         }
 
         self.finish_compact_batch(&new_layers, &Vec::new(), &deltas_to_compact)
+            .log_if_slow(
+                "compact_legacy_finish_compact_batch",
+                Duration::from_secs(20),
+            )
             .await?;
         Ok(fully_compacted)
     }
