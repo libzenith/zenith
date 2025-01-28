@@ -61,8 +61,18 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
         docker cp $TEST_CONTAINER_NAME:/ext-src/pg_hint_plan-src/data $TMPDIR/data
         docker cp $TMPDIR/data $COMPUTE_CONTAINER_NAME:/ext-src/pg_hint_plan-src/
         rm -rf $TMPDIR
+        # Prepare for the PostGIS test
+        docker exec $COMPUTE_CONTAINER_NAME mkdir -p /tmp/pgis_reg/pgis_reg_tmp
+        TMPDIR=$(mktemp -d)
+        docker cp $TEST_CONTAINER_NAME:/ext-src/postgis-src/raster/test $TMPDIR
+        docker cp $TEST_CONTAINER_NAME:/ext-src/postgis-src/regress/00-regress-install $TMPDIR
+        docker exec $COMPUTE_CONTAINER_NAME mkdir -p /ext-src/postgis-src/raster /ext-src/postgis-src/regress /ext-src/postgis-src/regress/00-regress-install
+        docker cp $TMPDIR/test $COMPUTE_CONTAINER_NAME:/ext-src/postgis-src/raster/test
+        docker cp $TMPDIR/00-regress-install $COMPUTE_CONTAINER_NAME:/ext-src/postgis-src/regress
+        rm -rf $TMPDIR
+
         # We are running tests now
-        if ! docker exec -e SKIP=timescaledb-src,rdkit-src,postgis-src,pgx_ulid-src,pgtap-src,pg_tiktoken-src,pg_jsonschema-src,kq_imcx-src,wal2json_2_5-src \
+        if ! docker exec -e SKIP=timescaledb-src,rdkit-src,pgx_ulid-src,pgtap-src,pg_tiktoken-src,pg_jsonschema-src,kq_imcx-src,wal2json_2_5-src \
             $TEST_CONTAINER_NAME /run-tests.sh | tee testout.txt
         then
             FAILED=$(tail -1 testout.txt)
@@ -73,6 +83,9 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
                 docker cp $TEST_CONTAINER_NAME:/ext-src/$d/regression.out $d || true
                 cat $d/regression.out $d/regression.diffs || true
             done
+            if echo $FAILED | grep -q postgis-src; then
+              docker exec $TEST_CONTAINER_NAME cat /tmp/pgis_reg/regress_log || true
+            fi
         rm -rf $FAILED
         exit 1
         fi
