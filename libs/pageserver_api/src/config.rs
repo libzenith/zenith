@@ -260,11 +260,10 @@ pub struct TenantConfigToml {
     /// Level0 delta layer threshold at which to delay layer flushes for compaction backpressure,
     /// such that they take 2x as long, and start waiting for layer flushes during ephemeral layer
     /// rolls. This helps compaction keep up with WAL ingestion, and avoids read amplification
-    /// blowing up. Should be >compaction_threshold. If None, defaults to 2 * compaction_threshold.
-    /// 0 to disable.
+    /// blowing up. Should be >compaction_threshold. 0 to disable. Disabled by default.
     pub l0_flush_delay_threshold: Option<usize>,
-    /// Level0 delta layer threshold at which to stall layer flushes. 0 to disable. If None,
-    /// defaults to 4 * compaction_threshold. Must be >compaction_threshold to avoid deadlock.
+    /// Level0 delta layer threshold at which to stall layer flushes. Must be >compaction_threshold
+    /// to avoid deadlock. 0 to disable. Disabled by default.
     pub l0_flush_stall_threshold: Option<usize>,
     // Determines how much history is retained, to allow
     // branching and read replicas at an older point in time.
