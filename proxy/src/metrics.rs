@@ -56,6 +56,8 @@ pub struct ProxyMetrics {
     pub connection_requests: CounterPairVec<NumConnectionRequestsGauge>,
     #[metric(flatten)]
     pub http_endpoint_pools: HttpEndpointPools,
+    #[metric(flatten)]
+    pub cancel_channel_size: CounterPairVec<CancelChannelSizeGauge>,
 
     /// Time it took for proxy to establish a connection to the compute endpoint.
     // largest bucket = 2^16 * 0.5ms = 32s
@@ -93,6 +95,16 @@ pub struct ProxyMetrics {
     /// Number of allowed ips
     #[metric(metadata = Thresholds::with_buckets([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 50.0, 100.0]))]
     pub allowed_ips_number: Histogram<10>,
+
+    /// Number of cache hits/misses for VPC endpoint IDs.
+    pub vpc_endpoint_id_cache_stats: CounterVec<StaticLabelSet<CacheOutcome>>,
+
+    /// Number of cache hits/misses for access blocker flags.
+    pub access_blocker_flags_cache_stats: CounterVec<StaticLabelSet<CacheOutcome>>,
+
+    /// Number of allowed VPC endpoints IDs
+    #[metric(metadata = Thresholds::with_buckets([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 50.0, 100.0]))]
+    pub allowed_vpc_endpoint_ids: Histogram<10>,
 
     /// Number of connections (per sni).
     pub accepted_connections_by_sni: CounterVec<StaticLabelSet<SniKind>>,
@@ -294,6 +306,16 @@ impl CounterPairAssoc for NumConnectionRequestsGauge {
 pub type NumConnectionRequestsGuard<'a> =
     metrics::MeasuredCounterPairGuard<'a, NumConnectionRequestsGauge>;
 
+pub struct CancelChannelSizeGauge;
+impl CounterPairAssoc for CancelChannelSizeGauge {
+    const INC_NAME: &'static MetricName = MetricName::from_str("opened_msgs_cancel_channel_total");
+    const DEC_NAME: &'static MetricName = MetricName::from_str("closed_msgs_cancel_channel_total");
+    const INC_HELP: &'static str = "Number of processing messages in the cancellation channel.";
+    const DEC_HELP: &'static str = "Number of closed messages in the cancellation channel.";
+    type LabelGroupSet = StaticLabelSet<RedisMsgKind>;
+}
+pub type CancelChannelSizeGuard<'a> = metrics::MeasuredCounterPairGuard<'a, CancelChannelSizeGauge>;
+
 #[derive(LabelGroup)]
 #[label(set = ComputeConnectionLatencySet)]
 pub struct ComputeConnectionLatencyGroup {
@@ -341,13 +363,6 @@ pub struct RedisErrors<'a> {
 }
 
 #[derive(FixedCardinalityLabel, Copy, Clone)]
-pub enum CancellationSource {
-    FromClient,
-    FromRedis,
-    Local,
-}
-
-#[derive(FixedCardinalityLabel, Copy, Clone)]
 pub enum CancellationOutcome {
     NotFound,
     Found,
@@ -357,7 +372,6 @@ pub enum CancellationOutcome {
 #[derive(LabelGroup)]
 #[label(set = CancellationRequestSet)]
 pub struct CancellationRequest {
-    pub source: CancellationSource,
     pub kind: CancellationOutcome,
 }
 
@@ -367,6 +381,16 @@ pub enum Waiting {
     Client,
     Compute,
     RetryTimeout,
+}
+
+#[derive(FixedCardinalityLabel, Copy, Clone)]
+#[label(singleton = "kind")]
+pub enum RedisMsgKind {
+    HSet,
+    HSetMultiple,
+    HGet,
+    HGetAll,
+    HDel,
 }
 
 #[derive(Default)]
@@ -556,6 +580,9 @@ pub enum RedisEventsCount {
     CancelSession,
     PasswordUpdate,
     AllowedIpsUpdate,
+    AllowedVpcEndpointIdsUpdateForProjects,
+    AllowedVpcEndpointIdsUpdateForAllProjectsInOrg,
+    BlockPublicOrVpcAccessUpdate,
 }
 
 pub struct ThreadPoolWorkers(usize);

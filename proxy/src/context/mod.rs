@@ -19,7 +19,7 @@ use crate::intern::{BranchIdInt, ProjectIdInt};
 use crate::metrics::{
     ConnectOutcome, InvalidEndpointsGroup, LatencyTimer, Metrics, Protocol, Waiting,
 };
-use crate::protocol2::ConnectionInfo;
+use crate::protocol2::{ConnectionInfo, ConnectionInfoExtra};
 use crate::types::{DbName, EndpointId, RoleName};
 
 pub mod parquet;
@@ -310,6 +310,15 @@ impl RequestContext {
             .conn_info
             .addr
             .ip()
+    }
+
+    pub(crate) fn extra(&self) -> Option<ConnectionInfoExtra> {
+        self.0
+            .try_lock()
+            .expect("should not deadlock")
+            .conn_info
+            .extra
+            .clone()
     }
 
     pub(crate) fn cold_start_info(&self) -> ColdStartInfo {

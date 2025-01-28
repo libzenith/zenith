@@ -30,6 +30,7 @@ use crate::control_plane::locks::ApiLocks;
 use crate::control_plane::CachedNodeInfo;
 use crate::error::{ErrorKind, ReportableError, UserFacingError};
 use crate::intern::EndpointIdInt;
+use crate::protocol2::ConnectionInfoExtra;
 use crate::proxy::connect_compute::ConnectMechanism;
 use crate::proxy::retry::{CouldRetry, ShouldRetryWakeCompute};
 use crate::rate_limiter::EndpointRateLimiter;
@@ -57,23 +58,52 @@ impl PoolingBackend {
 
         let user_info = user_info.clone();
         let backend = self.auth_backend.as_ref().map(|()| user_info.clone());
-        let (allowed_ips, maybe_secret) = backend.get_allowed_ips_and_secret(ctx).await?;
+        let allowed_ips = backend.get_allowed_ips(ctx).await?;
+
         if self.config.authentication_config.ip_allowlist_check_enabled
             && !check_peer_addr_is_in_list(&ctx.peer_addr(), &allowed_ips)
         {
             return Err(AuthError::ip_address_not_allowed(ctx.peer_addr()));
         }
+
+        let access_blocker_flags = backend.get_block_public_or_vpc_access(ctx).await?;
+        if self.config.authentication_config.is_vpc_acccess_proxy {
+            if access_blocker_flags.vpc_access_blocked {
+                return Err(AuthError::NetworkNotAllowed);
+            }
+
+            let extra = ctx.extra();
+            let incoming_endpoint_id = match extra {
+                None => String::new(),
+                Some(ConnectionInfoExtra::Aws { vpce_id }) => {
+                    // Convert the vcpe_id to a string
+                    String::from_utf8(vpce_id.to_vec()).unwrap_or_default()
+                }
+                Some(ConnectionInfoExtra::Azure { link_id }) => link_id.to_string(),
+            };
+
+            if incoming_endpoint_id.is_empty() {
+                return Err(AuthError::MissingVPCEndpointId);
+            }
+
+            let allowed_vpc_endpoint_ids = backend.get_allowed_vpc_endpoint_ids(ctx).await?;
+            // TODO: For now an empty VPC endpoint ID list means all are allowed. We should replace that.
+            if !allowed_vpc_endpoint_ids.is_empty()
+                && !allowed_vpc_endpoint_ids.contains(&incoming_endpoint_id)
+            {
+                return Err(AuthError::vpc_endpoint_id_not_allowed(incoming_endpoint_id));
+            }
+        } else if access_blocker_flags.public_access_blocked {
+            return Err(AuthError::NetworkNotAllowed);
+        }
+
         if !self
             .endpoint_rate_limiter
             .check(user_info.endpoint.clone().into(), 1)
         {
             return Err(AuthError::too_many_connections());
         }
-        let cached_secret = match maybe_secret {
-            Some(secret) => secret,
-            None => backend.get_role_secret(ctx).await?,
-        };
-
+        let cached_secret = backend.get_role_secret(ctx).await?;
         let secret = match cached_secret.value.clone() {
             Some(secret) => self.config.authentication_config.check_rate_limit(
                 ctx,

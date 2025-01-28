@@ -17,7 +17,8 @@ use crate::cache::project_info::ProjectInfoCacheImpl;
 use crate::config::{CacheOptions, EndpointCacheConfig, ProjectInfoCacheOptions};
 use crate::context::RequestContext;
 use crate::control_plane::{
-    errors, CachedAllowedIps, CachedNodeInfo, CachedRoleSecret, ControlPlaneApi, NodeInfoCache,
+    errors, CachedAccessBlockerFlags, CachedAllowedIps, CachedAllowedVpcEndpointIds,
+    CachedNodeInfo, CachedRoleSecret, ControlPlaneApi, NodeInfoCache,
 };
 use crate::error::ReportableError;
 use crate::metrics::ApiLockMetrics;
@@ -55,17 +56,45 @@ impl ControlPlaneApi for ControlPlaneClient {
         }
     }
 
-    async fn get_allowed_ips_and_secret(
+    async fn get_allowed_ips(
         &self,
         ctx: &RequestContext,
         user_info: &ComputeUserInfo,
-    ) -> Result<(CachedAllowedIps, Option<CachedRoleSecret>), errors::GetAuthInfoError> {
+    ) -> Result<CachedAllowedIps, errors::GetAuthInfoError> {
         match self {
-            Self::ProxyV1(api) => api.get_allowed_ips_and_secret(ctx, user_info).await,
+            Self::ProxyV1(api) => api.get_allowed_ips(ctx, user_info).await,
             #[cfg(any(test, feature = "testing"))]
-            Self::PostgresMock(api) => api.get_allowed_ips_and_secret(ctx, user_info).await,
+            Self::PostgresMock(api) => api.get_allowed_ips(ctx, user_info).await,
             #[cfg(test)]
-            Self::Test(api) => api.get_allowed_ips_and_secret(),
+            Self::Test(api) => api.get_allowed_ips(),
+        }
+    }
+
+    async fn get_allowed_vpc_endpoint_ids(
+        &self,
+        ctx: &RequestContext,
+        user_info: &ComputeUserInfo,
+    ) -> Result<CachedAllowedVpcEndpointIds, errors::GetAuthInfoError> {
+        match self {
+            Self::ProxyV1(api) => api.get_allowed_vpc_endpoint_ids(ctx, user_info).await,
+            #[cfg(any(test, feature = "testing"))]
+            Self::PostgresMock(api) => api.get_allowed_vpc_endpoint_ids(ctx, user_info).await,
+            #[cfg(test)]
+            Self::Test(api) => api.get_allowed_vpc_endpoint_ids(),
+        }
+    }
+
+    async fn get_block_public_or_vpc_access(
+        &self,
+        ctx: &RequestContext,
+        user_info: &ComputeUserInfo,
+    ) -> Result<CachedAccessBlockerFlags, errors::GetAuthInfoError> {
+        match self {
+            Self::ProxyV1(api) => api.get_block_public_or_vpc_access(ctx, user_info).await,
+            #[cfg(any(test, feature = "testing"))]
+            Self::PostgresMock(api) => api.get_block_public_or_vpc_access(ctx, user_info).await,
+            #[cfg(test)]
+            Self::Test(api) => api.get_block_public_or_vpc_access(),
         }
     }
 
@@ -102,9 +131,15 @@ impl ControlPlaneApi for ControlPlaneClient {
 pub(crate) trait TestControlPlaneClient: Send + Sync + 'static {
     fn wake_compute(&self) -> Result<CachedNodeInfo, errors::WakeComputeError>;
 
-    fn get_allowed_ips_and_secret(
+    fn get_allowed_ips(&self) -> Result<CachedAllowedIps, errors::GetAuthInfoError>;
+
+    fn get_allowed_vpc_endpoint_ids(
         &self,
-    ) -> Result<(CachedAllowedIps, Option<CachedRoleSecret>), errors::GetAuthInfoError>;
+    ) -> Result<CachedAllowedVpcEndpointIds, errors::GetAuthInfoError>;
+
+    fn get_block_public_or_vpc_access(
+        &self,
+    ) -> Result<CachedAccessBlockerFlags, errors::GetAuthInfoError>;
 
     fn dyn_clone(&self) -> Box<dyn TestControlPlaneClient>;
 }

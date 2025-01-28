@@ -7,8 +7,8 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{info, info_span};
 
-use super::{ComputeCredentialKeys, ControlPlaneApi};
-use crate::auth::backend::{BackendIpAllowlist, ComputeUserInfo};
+use super::ComputeCredentialKeys;
+use crate::auth::backend::ComputeUserInfo;
 use crate::auth::IpPattern;
 use crate::cache::Cached;
 use crate::config::AuthenticationConfig;
@@ -84,24 +84,13 @@ pub(crate) fn new_psql_session_id() -> String {
     hex::encode(rand::random::<[u8; 8]>())
 }
 
-#[async_trait]
-impl BackendIpAllowlist for ConsoleRedirectBackend {
-    async fn get_allowed_ips(
-        &self,
-        ctx: &RequestContext,
-        user_info: &ComputeUserInfo,
-    ) -> auth::Result<Vec<auth::IpPattern>> {
-        self.api
-            .get_allowed_ips_and_secret(ctx, user_info)
-            .await
-            .map(|(ips, _)| ips.as_ref().clone())
-            .map_err(|e| e.into())
-    }
-}
-
 impl ConsoleRedirectBackend {
     pub fn new(console_uri: reqwest::Url, api: cplane_proxy_v1::NeonControlPlaneClient) -> Self {
         Self { console_uri, api }
+    }
+
+    pub(crate) fn get_api(&self) -> &cplane_proxy_v1::NeonControlPlaneClient {
+        &self.api
     }
 
     pub(crate) async fn authenticate(
@@ -188,6 +177,15 @@ async fn authenticate(
             if !auth::check_peer_addr_is_in_list(&ctx.peer_addr(), allowed_ips) {
                 return Err(auth::AuthError::ip_address_not_allowed(ctx.peer_addr()));
             }
+        }
+    }
+
+    // Check if the access over the public internet is allowed, otherwise block. Note that
+    // the console redirect is not behind the VPC service endpoint, so we don't need to check
+    // the VPC endpoint ID.
+    if let Some(public_access_allowed) = db_info.public_access_allowed {
+        if !public_access_allowed {
+            return Err(auth::AuthError::NetworkNotAllowed);
         }
     }
 

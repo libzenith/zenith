@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use lasso::{Capacity, MemoryLimits, Spur, ThreadedRodeo};
 use rustc_hash::FxHasher;
 
-use crate::types::{BranchId, EndpointId, ProjectId, RoleName};
+use crate::types::{AccountId, BranchId, EndpointId, ProjectId, RoleName};
 
 pub trait InternId: Sized + 'static {
     fn get_interner() -> &'static StringInterner<Self>;
@@ -203,6 +203,26 @@ impl From<&ProjectId> for ProjectIdInt {
 impl From<ProjectId> for ProjectIdInt {
     fn from(value: ProjectId) -> Self {
         ProjectIdTag::get_interner().get_or_intern(&value)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AccountIdTag;
+impl InternId for AccountIdTag {
+    fn get_interner() -> &'static StringInterner<Self> {
+        static ROLE_NAMES: OnceLock<StringInterner<AccountIdTag>> = OnceLock::new();
+        ROLE_NAMES.get_or_init(Default::default)
+    }
+}
+pub type AccountIdInt = InternedString<AccountIdTag>;
+impl From<&AccountId> for AccountIdInt {
+    fn from(value: &AccountId) -> Self {
+        AccountIdTag::get_interner().get_or_intern(value)
+    }
+}
+impl From<AccountId> for AccountIdInt {
+    fn from(value: AccountId) -> Self {
+        AccountIdTag::get_interner().get_or_intern(&value)
     }
 }
 
