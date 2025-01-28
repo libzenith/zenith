@@ -1015,6 +1015,13 @@ pub struct TenantConfigPatchRequest {
     pub config: TenantConfigPatch, // as we have a flattened field, we should reject all unknown fields in it
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TenantWaitLsnRequest {
+    #[serde(flatten)]
+    pub timelines: HashMap<TimelineId, Lsn>,
+    pub timeout: Duration,
+}
+
 /// See [`TenantState::attachment_status`] and the OpenAPI docs for context.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "slug", content = "data", rename_all = "snake_case")]

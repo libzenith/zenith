@@ -274,7 +274,7 @@ pub(super) async fn connection_manager_loop_step(
                     };
 
                 last_discovery_ts = Some(std::time::Instant::now());
-                debug!("No active connection and no candidates, sending discovery request to the broker");
+                info!("No active connection and no candidates, sending discovery request to the broker");
 
                 // Cancellation safety: we want to send a message to the broker, but publish_one()
                 // function can get cancelled by the other select! arm. This is absolutely fine, because
