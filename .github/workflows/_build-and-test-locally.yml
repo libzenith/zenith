@@ -167,6 +167,7 @@ jobs:
 
       - name: Run cargo build
         run: |
+          export ASAN_OPTIONS=detect_leaks=0
           ${cov_prefix} mold -run cargo build $CARGO_FLAGS $CARGO_FEATURES --bins --tests
 
       # Do install *before* running rust tests because they might recompile the
