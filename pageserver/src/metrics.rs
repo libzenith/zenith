@@ -3,7 +3,7 @@ use metrics::{
     register_counter_vec, register_gauge_vec, register_histogram, register_histogram_vec,
     register_int_counter, register_int_counter_pair_vec, register_int_counter_vec,
     register_int_gauge, register_int_gauge_vec, register_uint_gauge, register_uint_gauge_vec,
-    Counter, CounterVec, GaugeVec, Histogram, HistogramVec, IntCounter, IntCounterPair,
+    Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramVec, IntCounter, IntCounterPair,
     IntCounterPairVec, IntCounterVec, IntGauge, IntGaugeVec, UIntGauge, UIntGaugeVec,
 };
 use once_cell::sync::Lazy;
@@ -394,6 +394,15 @@ pub(crate) static WAIT_LSN_TIME: Lazy<Histogram> = Lazy::new(|| {
         "pageserver_wait_lsn_seconds",
         "Time spent waiting for WAL to arrive",
         CRITICAL_OP_BUCKETS.into(),
+    )
+    .expect("failed to define a metric")
+});
+
+static FLUSH_WAIT_UPLOAD_TIME: Lazy<GaugeVec> = Lazy::new(|| {
+    register_gauge_vec!(
+        "pageserver_flush_wait_upload_seconds",
+        "Time spent waiting for preceding uploads during layer flush",
+        &["tenant_id", "shard_id", "timeline_id"]
     )
     .expect("failed to define a metric")
 });
@@ -2569,6 +2578,7 @@ pub(crate) struct TimelineMetrics {
     timeline_id: String,
     pub flush_time_histo: StorageTimeMetrics,
     pub flush_delay_histo: StorageTimeMetrics,
+    pub flush_wait_upload_time_gauge: Gauge,
     pub compact_time_histo: StorageTimeMetrics,
     pub create_images_time_histo: StorageTimeMetrics,
     pub logical_size_histo: StorageTimeMetrics,
@@ -2620,6 +2630,9 @@ impl TimelineMetrics {
             &shard_id,
             &timeline_id,
         );
+        let flush_wait_upload_time_gauge = FLUSH_WAIT_UPLOAD_TIME
+            .get_metric_with_label_values(&[&tenant_id, &shard_id, &timeline_id])
+            .unwrap();
         let compact_time_histo = StorageTimeMetrics::new(
             StorageTimeOperation::Compact,
             &tenant_id,
@@ -2766,6 +2779,7 @@ impl TimelineMetrics {
             timeline_id,
             flush_time_histo,
             flush_delay_histo,
+            flush_wait_upload_time_gauge,
             compact_time_histo,
             create_images_time_histo,
             logical_size_histo,
@@ -2815,6 +2829,14 @@ impl TimelineMetrics {
         self.resident_physical_size_gauge.get()
     }
 
+    pub(crate) fn flush_wait_upload_time_gauge_add(&self, duration: f64) {
+        self.flush_wait_upload_time_gauge.add(duration);
+        crate::metrics::FLUSH_WAIT_UPLOAD_TIME
+            .get_metric_with_label_values(&[&self.tenant_id, &self.shard_id, &self.timeline_id])
+            .unwrap()
+            .add(duration);
+    }
+
     pub(crate) fn shutdown(&self) {
         let was_shutdown = self
             .shutdown
@@ -2832,6 +2854,7 @@ impl TimelineMetrics {
         let shard_id = &self.shard_id;
         let _ = LAST_RECORD_LSN.remove_label_values(&[tenant_id, shard_id, timeline_id]);
         let _ = DISK_CONSISTENT_LSN.remove_label_values(&[tenant_id, shard_id, timeline_id]);
+        let _ = FLUSH_WAIT_UPLOAD_TIME.remove_label_values(&[tenant_id, shard_id, timeline_id]);
         let _ = STANDBY_HORIZON.remove_label_values(&[tenant_id, shard_id, timeline_id]);
         {
             RESIDENT_PHYSICAL_SIZE_GLOBAL.sub(self.resident_physical_size_get());

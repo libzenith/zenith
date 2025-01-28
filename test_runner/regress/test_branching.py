@@ -19,7 +19,6 @@ from fixtures.pageserver.utils import wait_until_tenant_active
 from fixtures.utils import query_scalar
 from performance.test_perf_pgbench import get_scales_matrix
 from requests import RequestException
-from requests.exceptions import RetryError
 
 
 # Test branch creation
@@ -177,8 +176,11 @@ def test_cannot_create_endpoint_on_non_uploaded_timeline(neon_env_builder: NeonE
 
         env.neon_cli.mappings_map_branch(initial_branch, env.initial_tenant, env.initial_timeline)
 
-        with pytest.raises(RuntimeError, match="is not active, state: Loading"):
-            env.endpoints.create_start(initial_branch, tenant_id=env.initial_tenant)
+        with pytest.raises(RuntimeError, match="ERROR: Not found: Timeline"):
+            env.endpoints.create_start(
+                initial_branch, tenant_id=env.initial_tenant, basebackup_request_tries=2
+            )
+        ps_http.configure_failpoints(("before-upload-index-pausable", "off"))
     finally:
         env.pageserver.stop(immediate=True)
 
@@ -219,7 +221,10 @@ def test_cannot_branch_from_non_uploaded_branch(neon_env_builder: NeonEnvBuilder
 
         branch_id = TimelineId.generate()
 
-        with pytest.raises(RetryError, match="too many 503 error responses"):
+        with pytest.raises(
+            PageserverApiException,
+            match="Cannot branch off the timeline that's not present in pageserver",
+        ):
             ps_http.timeline_create(
                 env.pg_version,
                 env.initial_tenant,
