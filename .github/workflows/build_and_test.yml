@@ -1050,6 +1050,7 @@ jobs:
           retries: 5
           script: |
             const tag = "${{ needs.tag.outputs.build-tag }}";
+            const branch = "${{ github.ref_name }}";
 
             try {
               const existingRef = await github.rest.git.getRef({
@@ -1092,12 +1093,48 @@ jobs:
               }
 
               console.log(`Release for tag ${tag} does not exist. Creating it...`);
+
+              // Find the PR number using the commit SHA
+              const pullRequests = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'closed',
+                base: branch,
+              });
+              
+              const pr = pullRequests.data.find(pr => pr.merge_commit_sha === context.sha);
+              const prNumber = pr ? pr.number : null;
+
+              // Find the previous release on the branch
+              const releases = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              });
+
+              const branchReleases = releases.data
+                .filter((release) => {
+                  const regex = new RegExp(`^${branch}-\\d+$`);
+                  return regex.test(release.tag_name) && !release.draft && !release.prerelease;
+                })
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+              const previousTag = branchReleases.length > 0 ? branchReleases[0].tag_name : null;
+
+              const releaseNotes = [
+                prNumber
+                  ? `Release PR https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}.`
+                  : 'Release PR not found.',
+                previousTag
+                  ? `Diff with the previous release https://github.com/${context.repo.owner}/${context.repo.repo}/compare/${previousTag}...${tag}.`
+                  : `No previous release found on branch ${branch}.`,
+              ].join('\n\n');
+
               await github.rest.repos.createRelease({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 tag_name: tag,
-                // TODO: Automate release notes properly
-                generate_release_notes: false,
+                body: releaseNotes,
               });
               console.log(`Release for tag ${tag} created successfully.`);
             }
