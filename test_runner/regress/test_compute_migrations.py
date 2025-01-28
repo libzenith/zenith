@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from fixtures.compute_migrations import COMPUTE_MIGRATIONS, NUM_COMPUTE_MIGRATIONS
+from fixtures.metrics import parse_metrics
 
 if TYPE_CHECKING:
     from fixtures.neon_fixtures import NeonEnv
@@ -32,6 +33,17 @@ def test_compute_migrations_retry(neon_simple_env: NeonEnv, compute_migrations_d
             cur.execute("SELECT id FROM neon_migration.migration_id")
             migration_id = cast("int", cur.fetchall()[0][0])
             assert migration_id == i - 1
+
+        # Check that migration failure is properly recorded in the metrics
+        client = endpoint.http_client()
+        raw_metrics = client.metrics()
+        metrics = parse_metrics(raw_metrics)
+        failed_migration = metrics.query_all(
+            "compute_ctl_db_migration_failed_total",
+        )
+        assert len(failed_migration) == 1
+        for sample in failed_migration:
+            assert sample.value == 1
 
         endpoint.stop()
 

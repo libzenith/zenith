@@ -85,6 +85,8 @@ use tracing::info;
 use tracing::log::warn;
 use zstd::stream::read::Decoder;
 
+use crate::metrics::{REMOTE_EXT_REQUESTS_FAILED, REMOTE_EXT_REQUESTS_TOTAL, UNKNOWN_HTTP_STATUS};
+
 fn get_pg_config(argument: &str, pgbin: &str) -> String {
     // gives the result of `pg_config [argument]`
     // where argument is a flag like `--version` or `--sharedir`
@@ -258,21 +260,60 @@ async fn download_extension_tar(ext_remote_storage: &str, ext_path: &str) -> Res
 
     info!("Download extension {:?} from uri {:?}", ext_path, uri);
 
-    let resp = reqwest::get(uri).await?;
+    REMOTE_EXT_REQUESTS_TOTAL.with_label_values(&[]).inc();
 
-    match resp.status() {
+    match do_extension_server_request(&uri).await {
+        Ok(resp) => {
+            info!(
+                "Successfully downloaded remote extension data {:?}",
+                ext_path
+            );
+            Ok(resp)
+        }
+        Err((msg, status)) => {
+            let status_str = status
+                .map(|s| s.to_string())
+                .unwrap_or(UNKNOWN_HTTP_STATUS.to_string());
+            REMOTE_EXT_REQUESTS_FAILED
+                .with_label_values(&[&status_str])
+                .inc();
+            bail!(msg);
+        }
+    }
+}
+
+// Do a single remote extensions server request.
+// Return result or (error message + status code) in case of any failures.
+async fn do_extension_server_request(uri: &str) -> Result<Bytes, (String, Option<StatusCode>)> {
+    let resp = reqwest::get(uri).await.map_err(|e| {
+        (
+            format!("could not perform remote extensions server request: {}", e),
+            None,
+        )
+    })?;
+    let status = resp.status();
+
+    match status {
         StatusCode::OK => match resp.bytes().await {
-            Ok(resp) => {
-                info!("Download extension {:?} completed successfully", ext_path);
-                Ok(resp)
-            }
-            Err(e) => bail!("could not deserialize remote extension response: {}", e),
+            Ok(resp) => Ok(resp),
+            Err(e) => Err((
+                format!("could not read remote extensions server response: {}", e),
+                // It's fine to return and report error with status as 200 OK,
+                // because we still failed to read the response.
+                Some(status),
+            )),
         },
-        StatusCode::SERVICE_UNAVAILABLE => bail!("remote extension is temporarily unavailable"),
-        _ => bail!(
-            "unexpected remote extension response status code: {}",
-            resp.status()
-        ),
+        StatusCode::SERVICE_UNAVAILABLE => Err((
+            "remote extensions server is temporarily unavailable".to_string(),
+            Some(status),
+        )),
+        _ => Err((
+            format!(
+                "unexpected remote extensions server response status code: {}",
+                status
+            ),
+            Some(status),
+        )),
     }
 }
 
