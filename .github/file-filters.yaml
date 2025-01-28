@@ -1,4 +1,5 @@
 rust_code: ['**/*.rs', '**/Cargo.toml', '**/Cargo.lock']
+rust_dependencies: ['**/Cargo.lock']
 
 v14: ['vendor/postgres-v14/**', 'Makefile', 'pgxn/**']
 v15: ['vendor/postgres-v15/**', 'Makefile', 'pgxn/**']
