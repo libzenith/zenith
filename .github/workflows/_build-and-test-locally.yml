@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       test-cfg:
-        description: 'a json object of postgres versions and lfc states to run regression tests on'
+        description: 'a json object of postgres versions and lfc/sanitizers states to build and run regression tests on'
         required: true
         type: string
 
@@ -48,6 +48,8 @@ jobs:
       # io_uring will account the memory of the CQ and SQ as locked.
       # More details: https://github.com/neondatabase/neon/issues/6373#issuecomment-1905814391
       options: --init --shm-size=512mb --ulimit memlock=67108864:67108864
+    strategy:
+      matrix: ${{ fromJSON(format('{{"include":{0}}}', inputs.test-cfg)) }}
     env:
       BUILD_TYPE: ${{ inputs.build-type }}
       GIT_VERSION: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -87,6 +89,7 @@ jobs:
       - name: Set env variables
         env:
           ARCH: ${{ inputs.arch }}
+          SANITIZERS: ${{ matrix.sanitizers }}
         run: |
           CARGO_FEATURES="--features testing"
           if [[ $BUILD_TYPE == "debug" && $ARCH == 'x64' ]]; then
@@ -99,8 +102,14 @@ jobs:
             cov_prefix=""
             CARGO_FLAGS="--locked --release"
           fi
+          if [[ $SANITIZERS == 'enabled' ]]; then
+            make_vars="WITH_SANITIZERS=yes"
+          else
+            make_vars=""
+          fi
           {
             echo "cov_prefix=${cov_prefix}"
+            echo "make_vars=${make_vars}"
             echo "CARGO_FEATURES=${CARGO_FEATURES}"
             echo "CARGO_FLAGS=${CARGO_FLAGS}"
             echo "CARGO_HOME=${GITHUB_WORKSPACE}/.cargo"
@@ -136,25 +145,25 @@ jobs:
 
       - name: Build postgres v14
         if: steps.cache_pg_14.outputs.cache-hit != 'true'
-        run: mold -run make postgres-v14 -j$(nproc)
+        run: mold -run make ${make_vars} postgres-v14 -j$(nproc)
 
       - name: Build postgres v15
         if: steps.cache_pg_15.outputs.cache-hit != 'true'
-        run: mold -run make postgres-v15 -j$(nproc)
+        run: mold -run make ${make_vars} postgres-v15 -j$(nproc)
 
       - name: Build postgres v16
         if: steps.cache_pg_16.outputs.cache-hit != 'true'
-        run: mold -run make postgres-v16 -j$(nproc)
+        run: mold -run make ${make_vars} postgres-v16 -j$(nproc)
 
       - name: Build postgres v17
         if: steps.cache_pg_17.outputs.cache-hit != 'true'
-        run: mold -run make postgres-v17 -j$(nproc)
+        run: mold -run make ${make_vars} postgres-v17 -j$(nproc)
 
       - name: Build neon extensions
-        run: mold -run make neon-pg-ext -j$(nproc)
+        run: mold -run make ${make_vars} neon-pg-ext -j$(nproc)
 
       - name: Build walproposer-lib
-        run: mold -run make walproposer-lib -j$(nproc)
+        run: mold -run make ${make_vars} walproposer-lib -j$(nproc)
 
       - name: Run cargo build
         run: |
