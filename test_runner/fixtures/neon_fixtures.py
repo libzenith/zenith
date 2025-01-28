@@ -4999,6 +4999,9 @@ def check_restored_datadir_content(
 def logical_replication_sync(
     subscriber: PgProtocol,
     publisher: PgProtocol,
+    # pass subname explicitly to avoid confusion
+    # when multiple subscriptions are present
+    subname: str,
     sub_dbname: str | None = None,
     pub_dbname: str | None = None,
 ) -> Lsn:
@@ -5010,15 +5013,20 @@ def logical_replication_sync(
     else:
         publisher_lsn = Lsn(publisher.safe_psql("SELECT pg_current_wal_flush_lsn()")[0][0])
 
+    # we need to handle table synchronization separately
+    # but there is no proper way to distinguish it before v17.
+    # use relid field to distinguish the phase.
+    # relid is only present for sync workes
+    # and is NULL for the apply workers
+    #
+    # handle case of parallel apply workers
+    # only check the latest_end_lsn for the leader worker
     while True:
+        query = f"select latest_end_lsn from pg_catalog.pg_stat_subscription where relid is NULL and leader_pid is NULL and subname='{subname}'"
         if sub_dbname is not None:
-            res = subscriber.safe_psql(
-                "select latest_end_lsn from pg_catalog.pg_stat_subscription", dbname=sub_dbname
-            )[0][0]
+            res = subscriber.safe_psql(query, dbname=sub_dbname)[0][0]
         else:
-            res = subscriber.safe_psql(
-                "select latest_end_lsn from pg_catalog.pg_stat_subscription"
-            )[0][0]
+            res = subscriber.safe_psql(query)[0][0]
 
         if res:
             log.info(f"subscriber_lsn={res}")
@@ -5029,7 +5037,7 @@ def logical_replication_sync(
         time.sleep(0.5)
 
 
-def tenant_get_shards(
+def tenant_get_shards(  #
     env: NeonEnv, tenant_id: TenantId, pageserver_id: int | None = None
 ) -> list[tuple[TenantShardId, NeonPageserver]]:
     """

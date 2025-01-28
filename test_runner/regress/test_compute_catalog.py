@@ -195,7 +195,7 @@ def test_dropdb_with_subscription(neon_simple_env: NeonEnv):
 
     # wait for the subscription to be active
     logical_replication_sync(
-        endpoint, endpoint, sub_dbname="subscriber_db", pub_dbname="publisher_db"
+        endpoint, endpoint, "mysub", sub_dbname="subscriber_db", pub_dbname="publisher_db"
     )
 
     # Check that replication is working
