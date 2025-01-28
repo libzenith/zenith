@@ -46,6 +46,7 @@ struct RequestContextInner {
     pub(crate) protocol: Protocol,
     first_packet: chrono::DateTime<Utc>,
     region: &'static str,
+    pub(crate) proxy_id: u16, // for generating cancel keys per region/process
     pub(crate) span: Span,
 
     // filled in as they are discovered
@@ -92,6 +93,7 @@ impl Clone for RequestContext {
             protocol: inner.protocol,
             first_packet: inner.first_packet,
             region: inner.region,
+            proxy_id: inner.proxy_id,
             span: info_span!("background_task"),
 
             project: inner.project,
@@ -124,6 +126,7 @@ impl RequestContext {
         conn_info: ConnectionInfo,
         protocol: Protocol,
         region: &'static str,
+        proxy_id: u16,
     ) -> Self {
         // TODO: be careful with long lived spans
         let span = info_span!(
@@ -141,6 +144,7 @@ impl RequestContext {
             protocol,
             first_packet: Utc::now(),
             region,
+            proxy_id,
             span,
 
             project: None,
@@ -172,7 +176,7 @@ impl RequestContext {
         let ip = IpAddr::from([127, 0, 0, 1]);
         let addr = SocketAddr::new(ip, 5432);
         let conn_info = ConnectionInfo { addr, extra: None };
-        RequestContext::new(Uuid::now_v7(), conn_info, Protocol::Tcp, "test")
+        RequestContext::new(Uuid::now_v7(), conn_info, Protocol::Tcp, "test", 1)
     }
 
     pub(crate) fn console_application_name(&self) -> String {
@@ -333,6 +337,10 @@ impl RequestContext {
             .expect("should not deadlock")
             .latency_timer
             .success();
+    }
+
+    pub(crate) fn proxy_id(&self) -> u16 {
+        self.0.try_lock().expect("should not deadlock").proxy_id
     }
 }
 

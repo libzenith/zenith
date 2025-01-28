@@ -10,7 +10,7 @@ use proxy::auth::backend::{AuthRateLimiter, ConsoleRedirectBackend, MaybeOwned};
 use proxy::cancellation::{CancelMap, CancellationHandler};
 use proxy::config::{
     self, remote_storage_from_toml, AuthenticationConfig, CacheOptions, ComputeConfig, HttpConfig,
-    ProjectInfoCacheOptions, ProxyConfig, ProxyProtocolV2,
+    ProjectInfoCacheOptions, ProxyConfig, ProxyProtocolV2, obfuscated_proxy_id,
 };
 use proxy::context::parquet::ParquetUploadArgs;
 use proxy::http::health_server::AppMetrics;
@@ -396,6 +396,8 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
+    let proxy_id: u16 = obfuscated_proxy_id(std::process::id(), &args.region);
+
     let cancellation_handler = Arc::new(CancellationHandler::<
         Option<Arc<Mutex<RedisPublisherClient>>>,
     >::new(
@@ -437,6 +439,7 @@ async fn main() -> anyhow::Result<()> {
                     cancellation_token.clone(),
                     cancellation_handler.clone(),
                     endpoint_rate_limiter.clone(),
+                    proxy_id,
                 ));
             }
 
@@ -448,6 +451,7 @@ async fn main() -> anyhow::Result<()> {
                     cancellation_token.clone(),
                     cancellation_handler.clone(),
                     endpoint_rate_limiter.clone(),
+                    proxy_id,
                 ));
             }
         }
@@ -459,6 +463,7 @@ async fn main() -> anyhow::Result<()> {
                     proxy_listener,
                     cancellation_token.clone(),
                     cancellation_handler.clone(),
+                    proxy_id,
                 ));
             }
         }

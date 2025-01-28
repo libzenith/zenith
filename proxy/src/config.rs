@@ -16,6 +16,8 @@ use crate::serverless::GlobalConnPoolOptions;
 pub use crate::tls::server_config::{configure_tls, TlsConfig};
 use crate::types::Host;
 
+use sha2::{Digest, Sha256};
+
 pub struct ProxyConfig {
     pub tls_config: Option<TlsConfig>,
     pub metric_collection: Option<MetricCollectionConfig>,
@@ -416,6 +418,23 @@ impl FromStr for ConcurrencyLockOptions {
     }
 }
 
+fn map_u32_to_u8(value: u32) -> u8 {
+    ((value * 31 + 17) % 255) as u8
+}
+
+pub fn obfuscated_proxy_id(process_id: u32, region_id: &str) -> u16 {
+    let process_id = map_u32_to_u8(process_id);
+    let hash_region_id =  Sha256::digest(region_id.as_bytes());
+
+    const BASE: u64 = 257;
+    let combined_region = hash_region_id.iter().enumerate().fold(0u64, |acc, (i, &byte)| {
+        (acc + (byte as u64 * BASE.pow(i as u32))) % 255
+    });
+
+    let combined_region = (combined_region % 255) as u8;
+    ((combined_region as u16) * 257 + (process_id as u16)) % 65535
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,5 +529,13 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_proxy_id_obfuscation() {
+        let process_id = 123;
+        let region_id = "us-west-2";
+        let proxy_id = obfuscated_proxy_id(process_id, region_id);
+        assert_eq!(proxy_id, 0x1f7b);
     }
 }

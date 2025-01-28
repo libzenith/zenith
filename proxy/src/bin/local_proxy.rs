@@ -14,7 +14,7 @@ use proxy::auth::backend::local::{LocalBackend, JWKS_ROLE_MAP};
 use proxy::auth::{self};
 use proxy::cancellation::CancellationHandlerMain;
 use proxy::config::{
-    self, AuthenticationConfig, ComputeConfig, HttpConfig, ProxyConfig, RetryConfig,
+    self, obfuscated_proxy_id, AuthenticationConfig, ComputeConfig, HttpConfig, ProxyConfig, RetryConfig
 };
 use proxy::control_plane::locks::ApiLocks;
 use proxy::control_plane::messages::{EndpointJwksResponse, JwksSettings};
@@ -218,6 +218,7 @@ async fn main() -> anyhow::Result<()> {
             proxy::metrics::CancellationSource::Local,
         )),
         endpoint_rate_limiter,
+        obfuscated_proxy_id(std::process::id(), "local"),
     );
 
     match futures::future::select(pin!(maintenance_tasks.join_next()), pin!(task)).await {

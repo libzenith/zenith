@@ -63,6 +63,7 @@ pub async fn task_main(
     cancellation_token: CancellationToken,
     cancellation_handler: Arc<CancellationHandlerMain>,
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
+    proxy_id: u16,
 ) -> anyhow::Result<()> {
     scopeguard::defer! {
         info!("websocket server has shut down");
@@ -198,6 +199,7 @@ pub async fn task_main(
                     conn,
                     conn_info,
                     session_id,
+                    proxy_id,
                 ))
                 .await;
             }
@@ -324,6 +326,7 @@ async fn connection_handler(
     conn: AsyncRW,
     conn_info: ConnectionInfo,
     session_id: uuid::Uuid,
+    proxy_id: u16,
 ) {
     let session_id = AtomicTake::new(session_id);
 
@@ -371,6 +374,7 @@ async fn connection_handler(
                     http_request_token,
                     endpoint_rate_limiter.clone(),
                     cancellations,
+                    proxy_id,
                 )
                 .in_current_span()
                 .map_ok_or_else(api_error_into_response, |r| r),
@@ -419,6 +423,7 @@ async fn request_handler(
     http_cancellation_token: CancellationToken,
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
     cancellations: TaskTracker,
+    proxy_id: u16,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, ApiError> {
     let host = request
         .headers()
@@ -436,6 +441,7 @@ async fn request_handler(
             conn_info,
             crate::metrics::Protocol::Ws,
             &config.region,
+            proxy_id,
         );
 
         let span = ctx.span();
@@ -473,6 +479,7 @@ async fn request_handler(
             conn_info,
             crate::metrics::Protocol::Http,
             &config.region,
+            proxy_id,
         );
         let span = ctx.span();
 

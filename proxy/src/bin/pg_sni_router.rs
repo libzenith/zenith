@@ -10,6 +10,7 @@ use clap::Arg;
 use futures::future::Either;
 use futures::TryFutureExt;
 use itertools::Itertools;
+use proxy::config::obfuscated_proxy_id;
 use proxy::context::RequestContext;
 use proxy::metrics::{Metrics, ThreadPoolMetrics};
 use proxy::protocol2::ConnectionInfo;
@@ -185,6 +186,7 @@ async fn task_main(
                     },
                     proxy::metrics::Protocol::SniRouter,
                     "sni",
+                    obfuscated_proxy_id(std::process::id(), "sni-router"), // just a shim for context
                 );
                 handle_client(ctx, dest_suffix, tls_config, tls_server_end_point, socket).await
             }

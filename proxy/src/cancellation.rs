@@ -80,15 +80,24 @@ impl ReportableError for CancelError {
 
 impl<P: CancellationPublisher> CancellationHandler<P> {
     /// Run async action within an ephemeral session identified by [`CancelKeyData`].
-    pub(crate) fn get_session(self: Arc<Self>) -> Session<P> {
+    pub(crate) fn get_session(self: Arc<Self>, proxy_id: u16) -> Session<P> {
         // we intentionally generate a random "backend pid" and "secret key" here.
         // we use the corresponding u64 as an identifier for the
         // actual endpoint+pid+secret for postgres/pgbouncer.
         //
         // if we forwarded the backend_pid from postgres to the client, there would be a lot
         // of overlap between our computes as most pids are small (~100).
+
         let key = loop {
-            let key = rand::random();
+            let key_rand: u64 = rand::random::<u64>() & 0x0000_ffff_ffff_ffff;
+
+            let backend_pid = ((proxy_id as u32) << 16) | ((key_rand >> 32) as u32) as u32;
+            let cancel_key = (key_rand as u32) as i32;
+
+            let key = CancelKeyData {
+                backend_pid: (backend_pid as i32),
+                cancel_key,
+            };
 
             // Random key collisions are unlikely to happen here, but they're still possible,
             // which is why we have to take care not to rewrite an existing key.
@@ -451,7 +460,7 @@ mod tests {
             CancellationSource::FromRedis,
         ));
 
-        let session = cancellation_handler.clone().get_session();
+        let session = cancellation_handler.clone().get_session(123);
         assert!(cancellation_handler.contains(&session));
         drop(session);
         // Check that the session has been dropped.

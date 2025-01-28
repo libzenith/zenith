@@ -25,6 +25,7 @@ pub async fn task_main(
     listener: tokio::net::TcpListener,
     cancellation_token: CancellationToken,
     cancellation_handler: Arc<CancellationHandlerMain>,
+    proxy_id: u16,
 ) -> anyhow::Result<()> {
     scopeguard::defer! {
         info!("proxy has shut down");
@@ -89,6 +90,7 @@ pub async fn task_main(
                 peer_addr,
                 crate::metrics::Protocol::Tcp,
                 &config.region,
+                proxy_id,
             );
 
             let res = handle_client(
@@ -222,7 +224,7 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
 
     node.cancel_closure
         .set_ip_allowlist(ip_allowlist.unwrap_or_default());
-    let session = cancellation_handler.get_session();
+    let session = cancellation_handler.get_session(ctx.proxy_id());
     prepare_client_connection(&node, &session, &mut stream).await?;
 
     // Before proxy passing, forward to compute whatever data is left in the
