@@ -166,15 +166,18 @@ jobs:
         run: mold -run make ${make_vars} walproposer-lib -j$(nproc)
 
       - name: Run cargo build
+        env:
+          WITH_TESTS: ${{ matrix.sanitizers != 'enabled' && '--tests' || '' }}
         run: |
           export ASAN_OPTIONS=detect_leaks=0
-          ${cov_prefix} mold -run cargo build $CARGO_FLAGS $CARGO_FEATURES --bins --tests
+          ${cov_prefix} mold -run cargo build $CARGO_FLAGS $CARGO_FEATURES --bins ${WITH_TESTS}
 
       # Do install *before* running rust tests because they might recompile the
       # binaries with different features/flags.
       - name: Install rust binaries
         env:
           ARCH: ${{ inputs.arch }}
+          SANITIZERS: ${{ matrix.sanitizers }}
         run: |
           # Install target binaries
           mkdir -p /tmp/neon/bin/
@@ -189,7 +192,7 @@ jobs:
           done
 
           # Install test executables and write list of all binaries (for code coverage)
-          if [[ $BUILD_TYPE == "debug" && $ARCH == 'x64' ]]; then
+          if [[ $BUILD_TYPE == "debug" && $ARCH == 'x64' && $SANITIZERS != 'enabled' ]]; then
             # Keep bloated coverage data files away from the rest of the artifact
             mkdir -p /tmp/coverage/
 
@@ -222,6 +225,7 @@ jobs:
           role-duration-seconds: 18000 # 5 hours
 
       - name: Run rust tests
+        if: ${{ matrix.sanitizers != 'enabled' }}
         env:
           NEXTEST_RETRIES: 3
         run: |
