@@ -222,6 +222,8 @@ def test_isolation(
             "max_prepared_transactions=100",
             # Enable the test mode, so that we don't need to patch the test cases.
             "neon.regress_test_mode = true",
+            # Stack size should be increased for tests to pass with asan.
+            "max_stack_depth = 4MB",
         ],
     )
     endpoint.safe_psql(f"CREATE DATABASE {DBNAME}")
