@@ -78,6 +78,7 @@ pub mod cancellation;
 pub mod compute;
 pub mod compute_ctl;
 pub mod config;
+pub mod conn;
 pub mod console_redirect_proxy;
 pub mod context;
 pub mod control_plane;

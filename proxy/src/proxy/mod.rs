@@ -25,6 +25,7 @@ use self::connect_compute::{connect_to_compute, TcpMechanism};
 use self::passthrough::ProxyPassthrough;
 use crate::cancellation::{self, CancellationHandlerMain, CancellationHandlerMainInternal};
 use crate::config::{ProxyConfig, ProxyProtocolV2, TlsConfig};
+use crate::conn::{Acceptor, TokioTcpAcceptor};
 use crate::context::RequestContext;
 use crate::error::ReportableError;
 use crate::metrics::{Metrics, NumClientConnectionsGuard};
@@ -55,7 +56,7 @@ pub async fn run_until_cancelled<F: std::future::Future>(
 pub async fn task_main(
     config: &'static ProxyConfig,
     auth_backend: &'static auth::Backend<'static, ()>,
-    listener: tokio::net::TcpListener,
+    acceptor: TokioTcpAcceptor,
     cancellation_token: CancellationToken,
     cancellation_handler: Arc<CancellationHandlerMain>,
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
@@ -64,15 +65,11 @@ pub async fn task_main(
         info!("proxy has shut down");
     }
 
-    // When set for the server socket, the keepalive setting
-    // will be inherited by all accepted client sockets.
-    socket2::SockRef::from(&listener).set_keepalive(true)?;
-
     let connections = tokio_util::task::task_tracker::TaskTracker::new();
     let cancellations = tokio_util::task::task_tracker::TaskTracker::new();
 
     while let Some(accept_result) =
-        run_until_cancelled(listener.accept(), &cancellation_token).await
+        run_until_cancelled(acceptor.accept(), &cancellation_token).await
     {
         let (socket, peer_addr) = accept_result?;
 
@@ -168,7 +165,7 @@ pub async fn task_main(
 
     connections.close();
     cancellations.close();
-    drop(listener);
+    drop(acceptor);
 
     // Drain connections
     connections.wait().await;

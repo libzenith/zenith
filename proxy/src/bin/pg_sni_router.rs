@@ -10,6 +10,7 @@ use clap::Arg;
 use futures::future::Either;
 use futures::TryFutureExt;
 use itertools::Itertools;
+use proxy::conn::{Acceptor, TokioTcpAcceptor};
 use proxy::context::RequestContext;
 use proxy::metrics::{Metrics, ThreadPoolMetrics};
 use proxy::protocol2::ConnectionInfo;
@@ -122,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
     // Start listening for incoming client connections
     let proxy_address: SocketAddr = args.get_one::<String>("listen").unwrap().parse()?;
     info!("Starting sni router on {proxy_address}");
-    let proxy_listener = TcpListener::bind(proxy_address).await?;
+    let proxy_listener = TokioTcpAcceptor::bind(proxy_address).await?;
 
     let cancellation_token = CancellationToken::new();
 
@@ -152,17 +153,13 @@ async fn task_main(
     dest_suffix: Arc<String>,
     tls_config: Arc<rustls::ServerConfig>,
     tls_server_end_point: TlsServerEndPoint,
-    listener: tokio::net::TcpListener,
+    acceptor: TokioTcpAcceptor,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    // When set for the server socket, the keepalive setting
-    // will be inherited by all accepted client sockets.
-    socket2::SockRef::from(&listener).set_keepalive(true)?;
-
     let connections = tokio_util::task::task_tracker::TaskTracker::new();
 
     while let Some(accept_result) =
-        run_until_cancelled(listener.accept(), &cancellation_token).await
+        run_until_cancelled(acceptor.accept(), &cancellation_token).await
     {
         let (socket, peer_addr) = accept_result?;
 
@@ -172,10 +169,6 @@ async fn task_main(
 
         connections.spawn(
             async move {
-                socket
-                    .set_nodelay(true)
-                    .context("failed to set socket option")?;
-
                 info!(%peer_addr, "serving");
                 let ctx = RequestContext::new(
                     session_id,
@@ -197,7 +190,7 @@ async fn task_main(
     }
 
     connections.close();
-    drop(listener);
+    drop(acceptor);
 
     connections.wait().await;
 

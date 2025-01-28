@@ -12,6 +12,7 @@ use proxy::config::{
     self, remote_storage_from_toml, AuthenticationConfig, CacheOptions, ComputeConfig, HttpConfig,
     ProjectInfoCacheOptions, ProxyConfig, ProxyProtocolV2,
 };
+use proxy::conn::TokioTcpAcceptor;
 use proxy::context::parquet::ParquetUploadArgs;
 use proxy::http::health_server::AppMetrics;
 use proxy::metrics::Metrics;
@@ -27,7 +28,6 @@ use proxy::serverless::GlobalConnPoolOptions;
 use proxy::tls::client_config::compute_client_config_with_root_certs;
 use proxy::{auth, control_plane, http, serverless, usage_metrics};
 use remote_storage::RemoteStorageConfig;
-use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -353,17 +353,17 @@ async fn main() -> anyhow::Result<()> {
     // Check that we can bind to address before further initialization
     let http_address: SocketAddr = args.http.parse()?;
     info!("Starting http on {http_address}");
-    let http_listener = TcpListener::bind(http_address).await?.into_std()?;
+    let http_listener = TokioTcpAcceptor::bind(http_address).await?;
 
     let mgmt_address: SocketAddr = args.mgmt.parse()?;
     info!("Starting mgmt on {mgmt_address}");
-    let mgmt_listener = TcpListener::bind(mgmt_address).await?;
+    let mgmt_listener = TokioTcpAcceptor::bind(mgmt_address).await?;
 
     let proxy_listener = if !args.is_auth_broker {
         let proxy_address: SocketAddr = args.proxy.parse()?;
         info!("Starting proxy on {proxy_address}");
 
-        Some(TcpListener::bind(proxy_address).await?)
+        Some(TokioTcpAcceptor::bind(proxy_address).await?)
     } else {
         None
     };
@@ -373,7 +373,7 @@ async fn main() -> anyhow::Result<()> {
     let serverless_listener = if let Some(serverless_address) = args.wss {
         let serverless_address: SocketAddr = serverless_address.parse()?;
         info!("Starting wss on {serverless_address}");
-        Some(TcpListener::bind(serverless_address).await?)
+        Some(TokioTcpAcceptor::bind(serverless_address).await?)
     } else if args.is_auth_broker {
         bail!("wss arg must be present for auth-broker")
     } else {

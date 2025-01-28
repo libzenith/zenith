@@ -16,6 +16,7 @@ use proxy::cancellation::CancellationHandlerMain;
 use proxy::config::{
     self, AuthenticationConfig, ComputeConfig, HttpConfig, ProxyConfig, RetryConfig,
 };
+use proxy::conn::TokioTcpAcceptor;
 use proxy::control_plane::locks::ApiLocks;
 use proxy::control_plane::messages::{EndpointJwksResponse, JwksSettings};
 use proxy::http::health_server::AppMetrics;
@@ -36,7 +37,6 @@ project_build_tag!(BUILD_TAG);
 
 use clap::Parser;
 use thiserror::Error;
-use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -166,8 +166,8 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let metrics_listener = TcpListener::bind(args.metrics).await?.into_std()?;
-    let http_listener = TcpListener::bind(args.http).await?;
+    let metrics_listener = TokioTcpAcceptor::bind(args.metrics).await?;
+    let http_listener = TokioTcpAcceptor::bind(args.http).await?;
     let shutdown = CancellationToken::new();
 
     // todo: should scale with CU

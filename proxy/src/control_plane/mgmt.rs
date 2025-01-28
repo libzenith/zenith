@@ -4,10 +4,11 @@ use anyhow::Context;
 use once_cell::sync::Lazy;
 use postgres_backend::{AuthType, PostgresBackend, PostgresBackendTCP, QueryError};
 use pq_proto::{BeMessage, SINGLE_COL_ROWDESC};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, info_span, Instrument};
 
+use crate::conn::{Acceptor, TokioTcpAcceptor};
 use crate::control_plane::messages::{DatabaseInfo, KickSession};
 use crate::waiters::{self, Waiter, Waiters};
 
@@ -26,18 +27,14 @@ pub(crate) fn notify(psql_session_id: &str, msg: ComputeReady) -> Result<(), wai
 
 /// Management API listener task.
 /// It spawns management response handlers needed for the console redirect auth flow.
-pub async fn task_main(listener: TcpListener) -> anyhow::Result<Infallible> {
+pub async fn task_main(acceptor: TokioTcpAcceptor) -> anyhow::Result<Infallible> {
     scopeguard::defer! {
         info!("mgmt has shut down");
     }
 
     loop {
-        let (socket, peer_addr) = listener.accept().await?;
+        let (socket, peer_addr) = acceptor.accept().await?;
         info!("accepted connection from {peer_addr}");
-
-        socket
-            .set_nodelay(true)
-            .context("failed to set client socket option")?;
 
         let span = info_span!("mgmt", peer = %peer_addr);
 

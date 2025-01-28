@@ -35,7 +35,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sql_over_http::{uuid_to_header_value, NEON_REQUEST_ID};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
@@ -45,6 +45,7 @@ use utils::http::error::ApiError;
 
 use crate::cancellation::CancellationHandlerMain;
 use crate::config::{ProxyConfig, ProxyProtocolV2};
+use crate::conn::{Acceptor, TokioTcpAcceptor};
 use crate::context::RequestContext;
 use crate::ext::TaskExt;
 use crate::metrics::Metrics;
@@ -59,7 +60,7 @@ pub(crate) const SERVERLESS_DRIVER_SNI: &str = "api";
 pub async fn task_main(
     config: &'static ProxyConfig,
     auth_backend: &'static crate::auth::Backend<'static, ()>,
-    ws_listener: TcpListener,
+    ws_acceptor: TokioTcpAcceptor,
     cancellation_token: CancellationToken,
     cancellation_handler: Arc<CancellationHandlerMain>,
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
@@ -134,7 +135,7 @@ pub async fn task_main(
     connections.close(); // allows `connections.wait to complete`
 
     let cancellations = tokio_util::task::task_tracker::TaskTracker::new();
-    while let Some(res) = run_until_cancelled(ws_listener.accept(), &cancellation_token).await {
+    while let Some(res) = run_until_cancelled(ws_acceptor.accept(), &cancellation_token).await {
         let (conn, peer_addr) = res.context("could not accept TCP stream")?;
         if let Err(e) = conn.set_nodelay(true) {
             tracing::error!("could not set nodelay: {e}");

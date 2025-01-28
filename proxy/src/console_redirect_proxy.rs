@@ -8,6 +8,7 @@ use tracing::{debug, error, info, Instrument};
 use crate::auth::backend::ConsoleRedirectBackend;
 use crate::cancellation::{CancellationHandlerMain, CancellationHandlerMainInternal};
 use crate::config::{ProxyConfig, ProxyProtocolV2};
+use crate::conn::{Acceptor, TokioTcpAcceptor};
 use crate::context::RequestContext;
 use crate::error::ReportableError;
 use crate::metrics::{Metrics, NumClientConnectionsGuard};
@@ -22,7 +23,7 @@ use crate::proxy::{
 pub async fn task_main(
     config: &'static ProxyConfig,
     backend: &'static ConsoleRedirectBackend,
-    listener: tokio::net::TcpListener,
+    acceptor: TokioTcpAcceptor,
     cancellation_token: CancellationToken,
     cancellation_handler: Arc<CancellationHandlerMain>,
 ) -> anyhow::Result<()> {
@@ -30,15 +31,11 @@ pub async fn task_main(
         info!("proxy has shut down");
     }
 
-    // When set for the server socket, the keepalive setting
-    // will be inherited by all accepted client sockets.
-    socket2::SockRef::from(&listener).set_keepalive(true)?;
-
     let connections = tokio_util::task::task_tracker::TaskTracker::new();
     let cancellations = tokio_util::task::task_tracker::TaskTracker::new();
 
     while let Some(accept_result) =
-        run_until_cancelled(listener.accept(), &cancellation_token).await
+        run_until_cancelled(acceptor.accept(), &cancellation_token).await
     {
         let (socket, peer_addr) = accept_result?;
 
@@ -131,7 +128,7 @@ pub async fn task_main(
 
     connections.close();
     cancellations.close();
-    drop(listener);
+    drop(acceptor);
 
     // Drain connections
     connections.wait().await;

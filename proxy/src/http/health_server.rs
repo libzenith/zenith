@@ -1,5 +1,4 @@
 use std::convert::Infallible;
-use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail};
@@ -14,6 +13,7 @@ use utils::http::error::ApiError;
 use utils::http::json::json_response;
 use utils::http::{RouterBuilder, RouterService};
 
+use crate::conn::TokioTcpAcceptor;
 use crate::ext::{LockExt, TaskExt};
 use crate::jemalloc;
 
@@ -36,7 +36,7 @@ fn make_router(metrics: AppMetrics) -> RouterBuilder<hyper0::Body, ApiError> {
 }
 
 pub async fn task_main(
-    http_listener: TcpListener,
+    http_acceptor: TokioTcpAcceptor,
     metrics: AppMetrics,
 ) -> anyhow::Result<Infallible> {
     scopeguard::defer! {
@@ -45,7 +45,7 @@ pub async fn task_main(
 
     let service = || RouterService::new(make_router(metrics).build()?);
 
-    hyper0::Server::from_tcp(http_listener)?
+    hyper0::Server::from_tcp(http_acceptor.into_std()?)?
         .serve(service().map_err(|e| anyhow!(e))?)
         .await?;
 
