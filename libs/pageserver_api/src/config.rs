@@ -266,6 +266,10 @@ pub struct TenantConfigToml {
     /// Level0 delta layer threshold at which to stall layer flushes. 0 to disable. If None,
     /// defaults to 4 * compaction_threshold. Must be >compaction_threshold to avoid deadlock.
     pub l0_flush_stall_threshold: Option<usize>,
+    /// If true, Level0 delta layer flushes will wait for S3 upload before flushing the next
+    /// layer. This is a temporary backpressure mechanism which should be removed once
+    /// l0_flush_{delay,stall}_threshold is fully enabled.
+    pub l0_flush_wait_upload: bool,
     // Determines how much history is retained, to allow
     // branching and read replicas at an older point in time.
     // The unit is #of bytes of WAL.
@@ -523,6 +527,8 @@ pub mod tenant_conf_defaults {
     pub const DEFAULT_COMPACTION_ALGORITHM: crate::models::CompactionAlgorithm =
         crate::models::CompactionAlgorithm::Legacy;
 
+    pub const DEFAULT_L0_FLUSH_WAIT_UPLOAD: bool = true;
+
     pub const DEFAULT_GC_HORIZON: u64 = 64 * 1024 * 1024;
 
     // Large DEFAULT_GC_PERIOD is fine as long as PITR_INTERVAL is larger.
@@ -563,6 +569,7 @@ impl Default for TenantConfigToml {
             },
             l0_flush_delay_threshold: None,
             l0_flush_stall_threshold: None,
+            l0_flush_wait_upload: DEFAULT_L0_FLUSH_WAIT_UPLOAD,
             gc_horizon: DEFAULT_GC_HORIZON,
             gc_period: humantime::parse_duration(DEFAULT_GC_PERIOD)
                 .expect("cannot parse default gc period"),
