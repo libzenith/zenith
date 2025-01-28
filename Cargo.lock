@@ -6922,6 +6922,7 @@ dependencies = [
  "pin-project-lite",
  "postgres-protocol2",
  "postgres-types2",
+ "serde",
  "tokio",
  "tokio-util",
 ]
