@@ -17,35 +17,24 @@ concurrency:
 
 jobs:
   check-permissions:
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'run-no-ci') }}
     uses: ./.github/workflows/check-permissions.yml
     with:
       github-event-name: ${{ github.event_name}}
 
-  actionlint:
+  build-build-tools-image:
     needs: [ check-permissions ]
-    runs-on: ubuntu-22.04
+    uses: ./.github/workflows/build-build-tools-image.yml
+    secrets: inherit
+
+  actionlint:
+    needs: [ build-build-tools-image ]
+    runs-on: [ self-hosted, small ]
+    container:
+      image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
+      credentials:
+        username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
+        password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
+      options: --init --user root
     steps:
       - uses: actions/checkout@v4
-      - uses: reviewdog/action-actionlint@v1
-        env:
-          # SC2046 - Quote this to prevent word splitting. - https://www.shellcheck.net/wiki/SC2046
-          # SC2086 - Double quote to prevent globbing and word splitting. - https://www.shellcheck.net/wiki/SC2086
-          SHELLCHECK_OPTS: --exclude=SC2046,SC2086
-        with:
-          fail_level: error
-          filter_mode: nofilter
-          level: error
-
-      - name: Disallow 'ubuntu-latest' runners
-        run: |
-          PAT='^\s*runs-on:.*-latest'
-          if grep -ERq $PAT .github/workflows; then
-            grep -ERl $PAT .github/workflows |\
-            while read -r f
-            do
-              l=$(grep -nE $PAT $f | awk -F: '{print $1}' | head -1)
-              echo "::error file=$f,line=$l::Please use 'ubuntu-22.04' instead of 'ubuntu-latest'"
-            done
-            exit 1
-          fi
+      - uses: neondatabase/dev-actions/actions-linters@bayandin/add-actions-linters
