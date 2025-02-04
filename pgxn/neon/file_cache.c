@@ -41,12 +41,16 @@
 #include "utils/dynahash.h"
 #include "utils/guc.h"
 
+#if PG_VERSION_NUM >= 150000
+#include "access/xlogrecovery.h"
+#endif
+
 #include "hll.h"
 #include "bitmap.h"
 #include "neon.h"
 #include "neon_perf_counters.h"
 
-#define CriticalAssert(cond) do if (!(cond)) elog(PANIC, "Assertion %s failed at %s:%d: ", #cond, __FILE__, __LINE__); while (0)
+#define CriticalAssert(cond) do if (!(cond)) elog(PANIC, "LFC: assertion %s failed at %s:%d: ", #cond, __FILE__, __LINE__); while (0)
 
 /*
  * Local file cache is used to temporary store relations pages in local file system.
@@ -150,6 +154,8 @@ typedef struct FileCacheControl
 	ConditionVariable cv[N_COND_VARS]; /* turnstile of condition variables */
 } FileCacheControl;
 
+bool lfc_store_prefetch_result;
+
 static HTAB *lfc_hash;
 static int	lfc_desc = 0;
 static LWLockId lfc_lock;
@@ -175,7 +181,7 @@ lfc_disable(char const *op)
 {
 	int			fd;
 
-	elog(WARNING, "Failed to %s local file cache at %s: %m, disabling local file cache", op, lfc_path);
+	elog(WARNING, "LFC: failed to %s local file cache at %s: %m, disabling local file cache", op, lfc_path);
 
 	/* Invalidate hash */
 	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
@@ -210,7 +216,7 @@ lfc_disable(char const *op)
 			pgstat_report_wait_end();
 
 			if (rc < 0)
-				elog(WARNING, "Failed to truncate local file cache %s: %m", lfc_path);
+				elog(WARNING, "LFC: failed to truncate local file cache %s: %m", lfc_path);
 		}
 		/* Wakeup waiting backends */
 		for (int i = 0; i < N_COND_VARS; i++)
@@ -225,7 +231,7 @@ lfc_disable(char const *op)
 
 	fd = BasicOpenFile(lfc_path, O_RDWR | O_CREAT | O_TRUNC);
 	if (fd < 0)
-		elog(WARNING, "Failed to recreate local file cache %s: %m", lfc_path);
+		elog(WARNING, "LFC: failed to recreate local file cache %s: %m", lfc_path);
 	else
 		close(fd);
 
@@ -307,7 +313,7 @@ lfc_shmem_startup(void)
 		fd = BasicOpenFile(lfc_path, O_RDWR | O_CREAT | O_TRUNC);
 		if (fd < 0)
 		{
-			elog(WARNING, "Failed to create local file cache %s: %m", lfc_path);
+			elog(WARNING, "LFC: failed to create local file cache %s: %m", lfc_path);
 			lfc_ctl->limit = 0;
 		}
 		else
@@ -354,7 +360,7 @@ lfc_check_limit_hook(int *newval, void **extra, GucSource source)
 {
 	if (*newval > lfc_max_size)
 	{
-		elog(ERROR, "neon.file_cache_size_limit can not be larger than neon.max_file_cache_size");
+		elog(ERROR, "LFC: neon.file_cache_size_limit can not be larger than neon.max_file_cache_size");
 		return false;
 	}
 	return true;
@@ -433,6 +439,17 @@ lfc_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		neon_log(ERROR, "Neon module should be loaded via shared_preload_libraries");
 
+
+	DefineCustomBoolVariable("neon.store_prefetch_result_in_lfc",
+							"Immediately store received prefetch result in LFC",
+							NULL,
+							&lfc_store_prefetch_result,
+							false,
+							PGC_SUSET,
+							0,
+							NULL,
+							NULL,
+							NULL);
 
 	DefineCustomIntVariable("neon.max_file_cache_size",
 							"Maximal size of Neon local file cache",
@@ -915,7 +932,7 @@ lfc_init_new_entry(FileCacheEntry* entry, uint32 hash)
  *    do it,overwriting old (prefetched) page image. As far as this write will be completed before
  *    shared buffer can be reassigned, not other backend can see old page image.
 */
-void
+bool
 lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 			 const void* buffer, XLogRecPtr lsn)
 {
@@ -932,10 +949,10 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 	int		chunk_offs = blkno & (BLOCKS_PER_CHUNK - 1);
 
 	if (lfc_maybe_disabled())	/* fast exit if file cache is disabled */
-		return;
+		return false;
 
 	if (!lfc_ensure_opened())
-		return;
+		return false;
 
 	CopyNRelFileInfoToBufTag(tag, rinfo);
 	tag.forkNum = forknum;
@@ -951,12 +968,12 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 	if (!LFC_ENABLED())
 	{
 		LWLockRelease(lfc_lock);
-		return;
+		return false;
 	}
 	if (GetLastWrittenLSN(rinfo, forknum, blkno) > lsn)
 	{
 		LWLockRelease(lfc_lock);
-		return;
+		return false;
 	}
 
 	entry = hash_search_with_hash_value(lfc_hash, &tag, hash, HASH_ENTER, &found);
@@ -967,7 +984,7 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 		if (state != UNAVAILABLE) {
 			/* Do not rewrite existed LFC entry */
 			LWLockRelease(lfc_lock);
-			return;
+			return false;
 		}
 		/*
 		 * Unlink entry from LRU list to pin it for the duration of IO
@@ -985,7 +1002,7 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 			 * so skip to the next one
 			 */
 			LWLockRelease(lfc_lock);
-			return;
+			return false;
 		}
 	}
 
@@ -1039,6 +1056,7 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 		}
 		LWLockRelease(lfc_lock);
 	}
+	return true;
 }
 
 /*
@@ -1069,7 +1087,15 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 
 	CriticalAssert(BufTagGetRelNumber(&tag) != InvalidRelFileNumber);
 
-	/* 
+	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+
+	if (!LFC_ENABLED())
+	{
+		LWLockRelease(lfc_lock);
+		return;
+	}
+
+	/*
 	 * For every chunk that has blocks we're interested in, we
 	 * 1. get the chunk header
 	 * 2. Check if the chunk actually has the blocks we're interested in
@@ -1098,14 +1124,6 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		hash = get_hash_value(lfc_hash, &tag);
 		cv = &lfc_ctl->cv[hash % N_COND_VARS];
 
-		LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
-
-		if (!LFC_ENABLED())
-		{
-			LWLockRelease(lfc_lock);
-			return;
-		}
-
 		entry = hash_search_with_hash_value(lfc_hash, &tag, hash, HASH_ENTER, &found);
 
 		if (found)
@@ -1125,7 +1143,6 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 				 * We can't process this chunk due to lack of space in LFC,
 				 * so skip to the next one
 				 */
-				LWLockRelease(lfc_lock);
 				blkno += blocks_in_chunk;
 				buf_offset += blocks_in_chunk;
 				nblocks -= blocks_in_chunk;
@@ -1175,6 +1192,7 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		if (rc != BLCKSZ * blocks_in_chunk)
 		{
 			lfc_disable("write");
+			return;
 		}
 		else
 		{
@@ -1211,12 +1229,12 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 				}
 			}
 
-			LWLockRelease(lfc_lock);
 		}
 		blkno += blocks_in_chunk;
 		buf_offset += blocks_in_chunk;
 		nblocks -= blocks_in_chunk;
 	}
+	LWLockRelease(lfc_lock);
 }
 
 typedef struct
