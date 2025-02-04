@@ -2048,9 +2048,11 @@ impl DatadirModification<'_> {
                             .push((DirectoryKind::Rel, MetricsUpdate::Sub(1)));
                         // put tombstone
                         self.put(key, Value::Image(SPARSE_TOMBSTONE_MARKER.clone()));
+                        // no need to set dirty to true
+                        true
+                    } else {
+                        false
                     }
-                    // no need to set dirty to true
-                    true
                 } else {
                     false
                 };
