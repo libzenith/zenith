@@ -37,8 +37,7 @@ pub(in crate::http) async fn download_extension(
 
     let ext = {
         let state = compute.state.lock().unwrap();
-        let pspec = state.pspec.as_ref().unwrap();
-        let spec = &pspec.spec;
+        let spec = &state.pspec.spec;
 
         let remote_extensions = match spec.remote_extensions.as_ref() {
             Some(r) => r,

@@ -115,18 +115,18 @@ pub struct ComputeState {
     /// compute wasn't used since start.
     pub last_active: Option<DateTime<Utc>>,
     pub error: Option<String>,
-    pub pspec: Option<ParsedSpec>,
+    pub pspec: ParsedSpec,
     pub metrics: ComputeMetrics,
 }
 
 impl ComputeState {
-    pub fn new() -> Self {
+    pub fn new(pspec: ParsedSpec) -> Self {
         Self {
             start_time: Utc::now(),
             status: ComputeStatus::Empty,
             last_active: None,
             error: None,
-            pspec: None,
+            pspec,
             metrics: ComputeMetrics::default(),
         }
     }
@@ -141,12 +141,6 @@ impl ComputeState {
     pub fn set_failed_status(&mut self, err: anyhow::Error, state_changed: &Condvar) {
         self.error = Some(format!("{err:?}"));
         self.set_status(ComputeStatus::Failed, state_changed);
-    }
-}
-
-impl Default for ComputeState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -321,11 +315,7 @@ impl ComputeNode {
     pub fn has_feature(&self, feature: ComputeFeature) -> bool {
         let state = self.state.lock().unwrap();
 
-        if let Some(s) = state.pspec.as_ref() {
-            s.spec.features.contains(&feature)
-        } else {
-            false
-        }
+        state.pspec.spec.features.contains(&feature)
     }
 
     pub fn set_status(&self, status: ComputeStatus) {
@@ -342,13 +332,8 @@ impl ComputeNode {
         self.state.lock().unwrap().status
     }
 
-    pub fn get_timeline_id(&self) -> Option<TimelineId> {
-        self.state
-            .lock()
-            .unwrap()
-            .pspec
-            .as_ref()
-            .map(|s| s.timeline_id)
+    pub fn get_timeline_id(&self) -> TimelineId {
+        self.state.lock().unwrap().pspec.timeline_id
     }
 
     // Remove `pgdata` directory and create it again with right permissions.
@@ -366,15 +351,15 @@ impl ComputeNode {
     // unarchive it to `pgdata` directory overriding all its previous content.
     #[instrument(skip_all, fields(%lsn))]
     fn try_get_basebackup(&self, compute_state: &ComputeState, lsn: Lsn) -> Result<()> {
-        let spec = compute_state.pspec.as_ref().expect("spec must be set");
+        let pspec = &compute_state.pspec;
         let start_time = Instant::now();
 
-        let shard0_connstr = spec.pageserver_connstr.split(',').next().unwrap();
+        let shard0_connstr = &pspec.pageserver_connstr.split(',').next().unwrap();
         let mut config = postgres::Config::from_str(shard0_connstr)?;
 
         // Use the storage auth token from the config file, if given.
         // Note: this overrides any password set in the connection string.
-        if let Some(storage_auth_token) = &spec.storage_auth_token {
+        if let Some(storage_auth_token) = &pspec.storage_auth_token {
             info!("Got storage auth token from spec file");
             config.password(storage_auth_token);
         } else {
@@ -387,25 +372,28 @@ impl ComputeNode {
 
         let basebackup_cmd = match lsn {
             Lsn(0) => {
-                if spec.spec.mode != ComputeMode::Primary {
+                if pspec.spec.mode != ComputeMode::Primary {
                     format!(
                         "basebackup {} {} --gzip --replica",
-                        spec.tenant_id, spec.timeline_id
+                        pspec.tenant_id, pspec.timeline_id
                     )
                 } else {
-                    format!("basebackup {} {} --gzip", spec.tenant_id, spec.timeline_id)
+                    format!(
+                        "basebackup {} {} --gzip",
+                        pspec.tenant_id, pspec.timeline_id
+                    )
                 }
             }
             _ => {
-                if spec.spec.mode != ComputeMode::Primary {
+                if pspec.spec.mode != ComputeMode::Primary {
                     format!(
                         "basebackup {} {} {} --gzip --replica",
-                        spec.tenant_id, spec.timeline_id, lsn
+                        pspec.tenant_id, pspec.timeline_id, lsn
                     )
                 } else {
                     format!(
                         "basebackup {} {} {} --gzip",
-                        spec.tenant_id, spec.timeline_id, lsn
+                        pspec.tenant_id, pspec.timeline_id, lsn
                     )
                 }
             }
@@ -473,11 +461,7 @@ impl ComputeNode {
         compute_state: &ComputeState,
     ) -> Result<Option<Lsn>> {
         // Construct a connection config for each safekeeper
-        let pspec: ParsedSpec = compute_state
-            .pspec
-            .as_ref()
-            .expect("spec must be set")
-            .clone();
+        let pspec = &compute_state.pspec;
         let sk_connstrs: Vec<String> = pspec.safekeeper_connstrings.clone();
         let sk_configs = sk_connstrs.into_iter().map(|connstr| {
             // Format connstr
@@ -627,7 +611,7 @@ impl ComputeNode {
     /// safekeepers sync, basebackup, etc.
     #[instrument(skip_all)]
     pub fn prepare_pgdata(&self, compute_state: &ComputeState) -> Result<()> {
-        let pspec = compute_state.pspec.as_ref().expect("spec must be set");
+        let pspec = &compute_state.pspec;
         let spec = &pspec.spec;
         let pgdata_path = Path::new(&self.pgdata);
 
@@ -957,7 +941,7 @@ impl ComputeNode {
             let mut drop_subscriptions_done = false;
 
             if spec.drop_subscriptions_before_start {
-                let timeline_id = self.get_timeline_id().context("timeline_id must be set")?;
+                let timeline_id = self.get_timeline_id();
                 let query = format!("select 1 from neon.drop_subscriptions_done where timeline_id = '{}'", timeline_id);
 
                 info!("Checking if drop subscription operation was already performed for timeline_id: {}", timeline_id);
@@ -1301,14 +1285,7 @@ impl ComputeNode {
         let conf = self.get_tokio_conn_conf(Some("compute_ctl:apply_config"));
 
         let conf = Arc::new(conf);
-        let spec = Arc::new(
-            compute_state
-                .pspec
-                .as_ref()
-                .expect("spec must be set")
-                .spec
-                .clone(),
-        );
+        let spec = Arc::new(compute_state.pspec.spec.clone());
 
         let max_concurrent_connections = self.max_service_connections(compute_state, &spec);
 
@@ -1360,7 +1337,7 @@ impl ComputeNode {
     /// as it's used to reconfigure a previously started and configured Postgres node.
     #[instrument(skip_all)]
     pub fn reconfigure(&self) -> Result<()> {
-        let spec = self.state.lock().unwrap().pspec.clone().unwrap().spec;
+        let spec = self.state.lock().unwrap().pspec.spec.clone();
 
         if let Some(ref pgbouncer_settings) = spec.pgbouncer_settings {
             info!("tuning pgbouncer");
@@ -1435,7 +1412,7 @@ impl ComputeNode {
     #[instrument(skip_all)]
     pub fn start_compute(&self) -> Result<(std::process::Child, std::thread::JoinHandle<()>)> {
         let compute_state = self.state.lock().unwrap().clone();
-        let pspec = compute_state.pspec.as_ref().expect("spec must be set");
+        let pspec = &compute_state.pspec;
         info!(
             "starting compute for project {}, operation {}, tenant {}, timeline {}",
             pspec.spec.cluster.cluster_id.as_deref().unwrap_or("None"),
@@ -1987,21 +1964,12 @@ LIMIT 100",
     /// The operation will time out after a specified duration.
     pub fn wait_timeout_while_pageserver_connstr_unchanged(&self, duration: Duration) {
         let state = self.state.lock().unwrap();
-        let old_pageserver_connstr = state
-            .pspec
-            .as_ref()
-            .expect("spec must be set")
-            .pageserver_connstr
-            .clone();
+        let old_pageserver_connstr = state.pspec.pageserver_connstr.clone();
         let mut unchanged = true;
         let _ = self
             .state_changed
             .wait_timeout_while(state, duration, |s| {
-                let pageserver_connstr = &s
-                    .pspec
-                    .as_ref()
-                    .expect("spec must be set")
-                    .pageserver_connstr;
+                let pageserver_connstr = &s.pspec.pageserver_connstr;
                 unchanged = pageserver_connstr == &old_pageserver_connstr;
                 unchanged
             })

@@ -58,7 +58,7 @@ async fn maybe_add_request_id_header(mut request: Request, next: Next) -> Respon
 async fn serve(port: u16, compute: Arc<ComputeNode>) {
     let jwks = {
         let state = compute.state.lock().unwrap();
-        let spec = &state.pspec.as_ref().unwrap().spec;
+        let spec = &state.pspec.spec;
 
         spec.jwks.clone()
     };

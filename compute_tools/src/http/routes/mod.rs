@@ -20,14 +20,8 @@ impl From<&ComputeState> for ComputeStatusResponse {
     fn from(state: &ComputeState) -> Self {
         ComputeStatusResponse {
             start_time: state.start_time,
-            tenant: state
-                .pspec
-                .as_ref()
-                .map(|pspec| pspec.tenant_id.to_string()),
-            timeline: state
-                .pspec
-                .as_ref()
-                .map(|pspec| pspec.timeline_id.to_string()),
+            tenant: Some(state.pspec.tenant_id.to_string()),
+            timeline: Some(state.pspec.timeline_id.to_string()),
             status: state.status,
             last_active: state.last_active,
             error: state.error.clone(),
