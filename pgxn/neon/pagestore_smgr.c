@@ -364,6 +364,7 @@ compact_prefetch_buffers(void)
 		target_slot->buftag = source_slot->buftag;
 		target_slot->shard_no = source_slot->shard_no;
 		target_slot->status = source_slot->status;
+		target_slot->flags = source_slot->flags;
 		target_slot->response = source_slot->response;
 		target_slot->reqid = source_slot->reqid;
 		target_slot->request_lsns = source_slot->request_lsns;
@@ -457,7 +458,7 @@ prefetch_pump_state(void)
 		if (response->tag == T_NeonGetPageResponse && !(slot->flags & PRFSF_LFC) && lfc_store_prefetch_result)
 		{
 			/*
-			 * Store prefetched result in LFC (please reed comments to lfc_prefetch
+			 * Store prefetched result in LFC (please read comments to lfc_prefetch
 			 * explaining why it can be done without holding shared buffer lock
 			 */
 			(void)lfc_prefetch(BufTagGetNRelFileInfo(slot->buftag), slot->buftag.forkNum, slot->buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
@@ -729,7 +730,7 @@ prefetch_read(PrefetchRequest *slot)
 		if (response->tag == T_NeonGetPageResponse && !(slot->flags & PRFSF_LFC) && lfc_store_prefetch_result)
 		{
 			/*
-			 * Store prefetched result in LFC (please reed comments to lfc_prefetch
+			 * Store prefetched result in LFC (please read comments to lfc_prefetch
 			 * explaining why it can be done without holding shared buffer lock
 			 */
 			(void)lfc_prefetch(BufTagGetNRelFileInfo(buftag), buftag.forkNum, buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
@@ -1138,6 +1139,7 @@ Retry:
 		slot->buftag = hashkey.buftag;
 		slot->shard_no = get_shard_number(&tag);
 		slot->my_ring_index = ring_index;
+		slot->flags = 0;
 
 		min_ring_index = Min(min_ring_index, ring_index);
 
@@ -2866,12 +2868,13 @@ neon_prefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		}
 
 		tag.blockNum = blocknum;
-		
+
 		for (int i = 0; i < PG_IOV_MAX / 8; i++)
 			lfc_present[i] = ~(lfc_present[i]);
 
 		ring_index = prefetch_register_bufferv(tag, NULL, iterblocks,
 											   lfc_present, true);
+
 		nblocks -= iterblocks;
 		blocknum += iterblocks;
 

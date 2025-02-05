@@ -255,10 +255,8 @@ lfc_maybe_disabled(void)
 static bool
 lfc_ensure_opened(void)
 {
-	bool		enabled = !lfc_maybe_disabled();
-
 	/* Open cache file if not done yet */
-	if (lfc_desc <= 0 && enabled)
+	if (lfc_desc <= 0)
 	{
 		lfc_desc = BasicOpenFile(lfc_path, O_RDWR);
 
@@ -268,7 +266,7 @@ lfc_ensure_opened(void)
 			return false;
 		}
 	}
-	return enabled;
+	return true;
 }
 
 static void
@@ -562,7 +560,10 @@ lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 	chunk_offs = blkno & (BLOCKS_PER_CHUNK - 1);
 
 	LWLockAcquire(lfc_lock, LW_SHARED);
+<<<<<<< HEAD
 
+=======
+>>>>>>> 82d352989 (Fix prefetch test)
 	if (!LFC_ENABLED())
 	{
 		LWLockRelease(lfc_lock);
@@ -588,7 +589,6 @@ lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		{
 			i += this_chunk;
 		}
-
 		/*
 		 * Break out of the iteration before doing expensive stuff for
 		 * a next iteration
@@ -946,6 +946,8 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 	instr_time io_start, io_end;
 	ConditionVariable* cv;
 	FileCacheBlockState state;
+	XLogRecPtr lwlsn;
+
 	int		chunk_offs = blkno & (BLOCKS_PER_CHUNK - 1);
 
 	if (lfc_maybe_disabled())	/* fast exit if file cache is disabled */
@@ -970,8 +972,11 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 		LWLockRelease(lfc_lock);
 		return false;
 	}
-	if (GetLastWrittenLSN(rinfo, forknum, blkno) > lsn)
+	lwlsn = GetLastWrittenLSN(rinfo, forknum, blkno);
+	if (lwlsn > lsn)
 	{
+		elog(DEBUG1, "Skip LFC write for %d because LwLSN=%X/%X is greater than not_nodified_since LSN %X/%X",
+			 blkno, LSN_FORMAT_ARGS(lwlsn), LSN_FORMAT_ARGS(lsn));
 		LWLockRelease(lfc_lock);
 		return false;
 	}
