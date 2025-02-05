@@ -42,25 +42,25 @@ def test_lfc_prefetch(neon_simple_env: NeonEnv):
     cur.execute("select pg_reload_conf()")
 
     cur.execute(
-        "explain (analyze,prefetch,format json) select sum(pk) as s1 from (select pk from t where sk between 100000 and 200000 limit 100)"
+        "explain (analyze,prefetch,format json) select sum(pk) from (select pk from t where sk between 100000 and 200000 limit 100) s1"
     )
     prefetch_expired = cur.fetchall()[0][0][0]["Plan"]["Prefetch Expired Requests"]
     log.info(f"Unused prefetches: {prefetch_expired}")
 
     cur.execute(
-        "explain (analyze,prefetch,format json) select sum(pk) as s2 from (select pk from t where sk between 200000 and 300000 limit 100)"
+        "explain (analyze,prefetch,format json) select sum(pk) from (select pk from t where sk between 200000 and 300000 limit 100) s2"
     )
     prefetch_expired = cur.fetchall()[0][0][0]["Plan"]["Prefetch Expired Requests"]
     log.info(f"Unused prefetches: {prefetch_expired}")
 
     cur.execute(
-        "explain (analyze,prefetch,format json) select sum(pk) as s3 from (select pk from t where sk between 300000 and 400000 limit 100)"
+        "explain (analyze,prefetch,format json) select sum(pk) from (select pk from t where sk between 300000 and 400000 limit 100) s3"
     )
     prefetch_expired = cur.fetchall()[0][0][0]["Plan"]["Prefetch Expired Requests"]
     log.info(f"Unused prefetches: {prefetch_expired}")
 
     cur.execute(
-        "explain (analyze,prefetch,format json) select sum(pk) as s4 from (select pk from t where sk between 100000 and 200000 limit 100)"
+        "explain (analyze,prefetch,format json) select sum(pk) from (select pk from t where sk between 100000 and 200000 limit 100) s4"
     )
     prefetch_expired = cur.fetchall()[0][0][0]["Plan"]["Prefetch Expired Requests"]
     log.info(f"Unused prefetches: {prefetch_expired}")
@@ -71,25 +71,25 @@ def test_lfc_prefetch(neon_simple_env: NeonEnv):
     cur.execute("set neon.store_prefetch_result_in_lfc=on")
 
     cur.execute(
-        "explain (analyze,prefetch,format json) select sum(pk) as s5 from (select pk from t where sk between 500000 and 600000 limit 100)"
+        "explain (analyze,prefetch,format json) select sum(pk) from (select pk from t where sk between 500000 and 600000 limit 100) s5"
     )
     prefetch_expired = cur.fetchall()[0][0][0]["Plan"]["Prefetch Expired Requests"]
     log.info(f"Unused prefetches: {prefetch_expired}")
 
     cur.execute(
-        "explain (analyze,prefetch,format json) select sum(pk) as s6 from (select pk from t where sk between 600000 and 700000 limit 100)"
+        "explain (analyze,prefetch,format json) select sum(pk) from (select pk from t where sk between 600000 and 700000 limit 100) s6"
     )
     prefetch_expired = cur.fetchall()[0][0][0]["Plan"]["Prefetch Expired Requests"]
     log.info(f"Unused prefetches: {prefetch_expired}")
 
     cur.execute(
-        "explain (analyze,prefetch,format json) select sum(pk) as s7 from (select pk from t where sk between 700000 and 800000 limit 100)"
+        "explain (analyze,prefetch,format json) select sum(pk) from (select pk from t where sk between 700000 and 800000 limit 100) s7"
     )
     prefetch_expired = cur.fetchall()[0][0][0]["Plan"]["Prefetch Expired Requests"]
     log.info(f"Unused prefetches: {prefetch_expired}")
 
     cur.execute(
-        "explain (analyze,prefetch,format json) select sum(pk) as s8 from (select pk from t where sk between 500000 and 600000 limit 100)"
+        "explain (analyze,prefetch,format json) select sum(pk) from (select pk from t where sk between 500000 and 600000 limit 100) s8"
     )
     prefetch_expired = cur.fetchall()[0][0][0]["Plan"]["Prefetch Expired Requests"]
     log.info(f"Unused prefetches: {prefetch_expired}")
