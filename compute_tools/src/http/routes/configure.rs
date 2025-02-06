@@ -47,7 +47,7 @@ pub(in crate::http) async fn configure(
             return JsonResponse::invalid_status(state.status);
         }
 
-        state.pspec = Some(pspec);
+        state.pspec = pspec;
         state.set_status(ComputeStatus::ConfigurationPending, &compute.state_changed);
         drop(state);
     }

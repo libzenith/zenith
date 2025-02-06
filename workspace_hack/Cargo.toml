@@ -18,7 +18,7 @@ license.workspace = true
 ahash = { version = "0.8" }
 anyhow = { version = "1", features = ["backtrace"] }
 base64-594e8ee84c453af0 = { package = "base64", version = "0.13", features = ["alloc"] }
-base64-647d43efb71741da = { package = "base64", version = "0.21", features = ["alloc"] }
+base64-647d43efb71741da = { package = "base64", version = "0.21" }
 base64ct = { version = "1", default-features = false, features = ["std"] }
 bytes = { version = "1", features = ["serde"] }
 camino = { version = "1", default-features = false, features = ["serde1"] }

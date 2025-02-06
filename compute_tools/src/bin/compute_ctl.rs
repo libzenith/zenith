@@ -53,7 +53,7 @@ use signal_hook::{consts::SIGINT, iterator::Signals};
 use tracing::{error, info, warn};
 use url::Url;
 
-use compute_api::responses::ComputeStatus;
+use compute_api::responses::{ComputeStatus, ControlPlaneComputeStatus};
 use compute_api::spec::ComputeSpec;
 
 use compute_tools::compute::{
@@ -244,8 +244,10 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
     // First, try to get cluster spec from the cli argument
     if let Some(ref spec_json) = cli.spec_json {
         info!("got spec from cli argument {}", spec_json);
+
         return Ok(CliSpecParams {
-            spec: Some(serde_json::from_str(spec_json)?),
+            spec: serde_json::from_str(spec_json)?,
+            status: ControlPlaneComputeStatus::Attached,
             live_config_allowed: false,
         });
     }
@@ -253,8 +255,17 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
     // Second, try to read it from the file if path is provided
     if let Some(ref spec_path) = cli.spec_path {
         let file = File::open(Path::new(spec_path))?;
+
+        if tracing::event_enabled!(tracing::Level::INFO) {
+            match spec_path.to_str() {
+                Some(file) => info!("got spec from file {}", file),
+                None => info!("got spec from file"),
+            }
+        }
+
         return Ok(CliSpecParams {
-            spec: Some(serde_json::from_reader(file)?),
+            spec: serde_json::from_reader(file)?,
+            status: ControlPlaneComputeStatus::Attached,
             live_config_allowed: true,
         });
     }
@@ -264,8 +275,9 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
     };
 
     match get_spec_from_control_plane(cli.control_plane_uri.as_ref().unwrap(), &cli.compute_id) {
-        Ok(spec) => Ok(CliSpecParams {
-            spec,
+        Ok(spec_response) => Ok(CliSpecParams {
+            spec: spec_response.spec,
+            status: spec_response.status,
             live_config_allowed: true,
         }),
         Err(e) => {
@@ -281,7 +293,8 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
 
 struct CliSpecParams {
     /// If a spec was provided via CLI or file, the [`ComputeSpec`]
-    spec: Option<ComputeSpec>,
+    spec: ComputeSpec,
+    status: ControlPlaneComputeStatus,
     live_config_allowed: bool,
 }
 
@@ -290,20 +303,16 @@ fn wait_spec(
     cli: &Cli,
     CliSpecParams {
         spec,
+        status,
         live_config_allowed,
     }: CliSpecParams,
 ) -> Result<Arc<ComputeNode>> {
-    let mut new_state = ComputeState::new();
-    let spec_set;
+    let pspec = ParsedSpec::try_from(spec).map_err(|msg| anyhow::anyhow!(msg))?;
+    info!("new pspec.spec: {:?}", pspec.spec);
+    info!("compute attachment status: {:?}", status);
 
-    if let Some(spec) = spec {
-        let pspec = ParsedSpec::try_from(spec).map_err(|msg| anyhow::anyhow!(msg))?;
-        info!("new pspec.spec: {:?}", pspec.spec);
-        new_state.pspec = Some(pspec);
-        spec_set = true;
-    } else {
-        spec_set = false;
-    }
+    let new_state = ComputeState::new(pspec);
+
     let connstr = Url::parse(&cli.connstr).context("cannot parse connstr as a URL")?;
     let conn_conf = postgres::config::Config::from_str(connstr.as_str())
         .context("cannot build postgres config from connstr")?;
@@ -331,7 +340,7 @@ fn wait_spec(
     // available for binding. Prewarming helps Postgres start quicker later,
     // because QEMU will already have its memory allocated from the host, and
     // the necessary binaries will already be cached.
-    if !spec_set {
+    if status == ControlPlaneComputeStatus::Empty {
         compute.prewarm_postgres()?;
     }
 
@@ -340,7 +349,7 @@ fn wait_spec(
     let _http_handle =
         launch_http_server(cli.http_port, &compute).expect("cannot launch http endpoint thread");
 
-    if !spec_set {
+    if status == ControlPlaneComputeStatus::Empty {
         // No spec provided, hang waiting for it.
         info!("no compute spec provided, waiting");
 
@@ -383,7 +392,7 @@ fn start_postgres(
 
     info!(
         "running compute with features: {:?}",
-        state.pspec.as_ref().unwrap().spec.features
+        state.pspec.spec.features
     );
     // before we release the mutex, fetch some parameters for later.
     let &ComputeSpec {
@@ -392,7 +401,7 @@ fn start_postgres(
         #[cfg(target_os = "linux")]
         disable_lfc_resizing,
         ..
-    } = &state.pspec.as_ref().unwrap().spec;
+    } = &state.pspec.spec;
     drop(state);
 
     // Launch remaining service threads
@@ -604,7 +613,7 @@ fn cleanup_after_postgres_exit(
 
     // Maybe sync safekeepers again, to speed up next startup
     let compute_state = compute.state.lock().unwrap().clone();
-    let pspec = compute_state.pspec.as_ref().expect("spec must be set");
+    let pspec = &compute_state.pspec;
     if matches!(pspec.spec.mode, compute_api::spec::ComputeMode::Primary) {
         info!("syncing safekeepers on shutdown");
         let storage_auth_token = pspec.storage_auth_token.clone();

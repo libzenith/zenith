@@ -20,9 +20,9 @@ use crate::compute::ComputeNode;
 pub fn launch_lsn_lease_bg_task_for_static(compute: &Arc<ComputeNode>) {
     let (tenant_id, timeline_id, lsn) = {
         let state = compute.state.lock().unwrap();
-        let spec = state.pspec.as_ref().expect("Spec must be set");
-        match spec.spec.mode {
-            ComputeMode::Static(lsn) => (spec.tenant_id, spec.timeline_id, lsn),
+        let pspec = &state.pspec;
+        match pspec.spec.mode {
+            ComputeMode::Static(lsn) => (pspec.tenant_id, pspec.timeline_id, lsn),
             _ => return,
         }
     };
@@ -81,7 +81,7 @@ fn acquire_lsn_lease_with_retry(
         let configs = {
             let state = compute.state.lock().unwrap();
 
-            let spec = state.pspec.as_ref().expect("spec must be set");
+            let spec = &state.pspec;
 
             let conn_strings = spec.pageserver_connstr.split(',');
 

@@ -140,7 +140,7 @@ pub struct CatalogObjects {
 /// to a different place.
 #[derive(Deserialize, Debug)]
 pub struct ControlPlaneSpecResponse {
-    pub spec: Option<ComputeSpec>,
+    pub spec: ComputeSpec,
     pub status: ControlPlaneComputeStatus,
 }
 
