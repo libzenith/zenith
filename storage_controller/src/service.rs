@@ -949,7 +949,7 @@ impl Service {
     async fn background_reconcile(self: &Arc<Self>) {
         self.startup_complete.clone().wait().await;
 
-        const BACKGROUND_RECONCILE_PERIOD: Duration = Duration::from_secs(20);
+        const BACKGROUND_RECONCILE_PERIOD: Duration = Duration::from_secs(2);
         let mut interval = tokio::time::interval(BACKGROUND_RECONCILE_PERIOD);
         while !self.reconcilers_cancel.is_cancelled() {
             tokio::select! {
