@@ -10,7 +10,6 @@ use postgres_protocol2::message::frontend::StartupMessageParams;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::IpAddr;
-use std::net::SocketAddr;
 use std::str;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
