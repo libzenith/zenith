@@ -20,7 +20,6 @@ pub mod copy_timeline;
 pub mod debug_dump;
 pub mod handler;
 pub mod http;
-pub mod json_ctrl;
 pub mod metrics;
 pub mod patch_control_file;
 pub mod pull_timeline;
