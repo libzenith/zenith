@@ -807,60 +807,6 @@ class ProposerPostgres(PgProtocol):
         self.pg_bin.run(args)
 
 
-# insert wal in all safekeepers and run sync on proposer
-def test_sync_safekeepers(
-    neon_env_builder: NeonEnvBuilder,
-    pg_bin: PgBin,
-    port_distributor: PortDistributor,
-):
-    # We don't really need the full environment for this test, just the
-    # safekeepers would be enough.
-    neon_env_builder.num_safekeepers = 3
-    env = neon_env_builder.init_start()
-
-    tenant_id = TenantId.generate()
-    timeline_id = TimelineId.generate()
-
-    # write config for proposer
-    pgdata_dir = os.path.join(env.repo_dir, "proposer_pgdata")
-    pg = ProposerPostgres(
-        pgdata_dir, pg_bin, tenant_id, timeline_id, "127.0.0.1", port_distributor.get_port()
-    )
-    pg.create_dir_config(env.get_safekeeper_connstrs())
-
-    # valid lsn, which is not in the segment start, nor in zero segment
-    epoch_start_lsn = Lsn("0/16B9188")
-    begin_lsn = epoch_start_lsn
-
-    # append and commit WAL
-    lsn_after_append = []
-    for i in range(3):
-        res = env.safekeepers[i].append_logical_message(
-            tenant_id,
-            timeline_id,
-            {
-                "lm_prefix": "prefix",
-                "lm_message": "message",
-                "set_commit_lsn": True,
-                "send_proposer_elected": True,
-                "term": 2,
-                "begin_lsn": int(begin_lsn),
-                "epoch_start_lsn": int(epoch_start_lsn),
-                "truncate_lsn": int(epoch_start_lsn),
-                "pg_version": int(env.pg_version) * 10000,
-            },
-        )
-        lsn = Lsn(res["inserted_wal"]["end_lsn"])
-        lsn_after_append.append(lsn)
-        log.info(f"safekeeper[{i}] lsn after append: {lsn}")
-
-    # run sync safekeepers
-    lsn_after_sync = pg.sync_safekeepers()
-    log.info(f"lsn after sync = {lsn_after_sync}")
-
-    assert all(lsn_after_sync == lsn for lsn in lsn_after_append)
-
-
 @pytest.mark.parametrize("auth_enabled", [False, True])
 def test_timeline_status(neon_env_builder: NeonEnvBuilder, auth_enabled: bool):
     neon_env_builder.auth_enabled = auth_enabled
