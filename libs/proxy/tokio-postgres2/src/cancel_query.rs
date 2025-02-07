@@ -34,7 +34,7 @@ where
         .map_err(|e| Error::tls(e.into()))?;
 
     let socket =
-        connect_socket::connect_socket(&config.host, config.port, config.connect_timeout).await?;
+        connect_socket::connect_socket(config.host_addr, &config.host, config.port, config.connect_timeout).await?;
 
     cancel_query_raw::cancel_query_raw(socket, ssl_mode, tls, process_id, secret_key).await
 }
