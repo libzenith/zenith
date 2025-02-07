@@ -4448,33 +4448,6 @@ class Safekeeper(LogUtils):
         for na in not_allowed:
             assert not self.log_contains(na)
 
-    def append_logical_message(
-        self, tenant_id: TenantId, timeline_id: TimelineId, request: dict[str, Any]
-    ) -> dict[str, Any]:
-        """
-        Send JSON_CTRL query to append LogicalMessage to WAL and modify
-        safekeeper state. It will construct LogicalMessage from provided
-        prefix and message, and then will write it to WAL.
-        """
-
-        # "replication=0" hacks psycopg not to send additional queries
-        # on startup, see https://github.com/psycopg/psycopg2/pull/482
-        token = self.env.auth_keys.generate_tenant_token(tenant_id)
-        connstr = f"host=localhost port={self.port.pg} password={token} replication=0 options='-c timeline_id={timeline_id} tenant_id={tenant_id}'"
-
-        with closing(psycopg2.connect(connstr)) as conn:
-            # server doesn't support transactions
-            conn.autocommit = True
-            with conn.cursor() as cur:
-                request_json = json.dumps(request)
-                log.info(f"JSON_CTRL request on port {self.port.pg}: {request_json}")
-                cur.execute("JSON_CTRL " + request_json)
-                all = cur.fetchall()
-                log.info(f"JSON_CTRL response: {all[0][0]}")
-                res = json.loads(all[0][0])
-                assert isinstance(res, dict)
-                return res
-
     def http_client(
         self, auth_token: str | None = None, gen_sk_wide_token: bool = True
     ) -> SafekeeperHttpClient:
