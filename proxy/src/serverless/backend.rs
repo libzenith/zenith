@@ -1,4 +1,5 @@
 use std::io;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -590,13 +591,14 @@ impl ConnectMechanism for HyperMechanism {
         node_info: &CachedNodeInfo,
         config: &ComputeConfig,
     ) -> Result<Self::Connection, Self::ConnectError> {
+        let host_addr = node_info.config.get_host_addr();
         let host = node_info.config.get_host();
         let permit = self.locks.get_permit(&host).await?;
 
         let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Compute);
 
         let port = node_info.config.get_port();
-        let res = connect_http2(&host, port, config.timeout).await;
+        let res = connect_http2(host_addr, &host, port, config.timeout).await;
         drop(pause);
         let (client, connection) = permit.release_result(res)?;
 
@@ -615,18 +617,21 @@ impl ConnectMechanism for HyperMechanism {
 }
 
 async fn connect_http2(
+    host_addr: Option<IpAddr>,
     host: &str,
     port: u16,
     timeout: Duration,
 ) -> Result<(http_conn_pool::Send, http_conn_pool::Connect), LocalProxyConnError> {
-    // assumption: host is an ip address so this should not actually perform any requests.
-    // todo: add that assumption as a guarantee in the control-plane API.
-    let mut addrs = lookup_host((host, port))
-        .await
-        .map_err(LocalProxyConnError::Io)?;
-
+    let addrs = match host_addr {
+        Some(addr) => vec![SocketAddr::new(addr, port)],
+        None => lookup_host((host, port))
+            .await
+            .map_err(LocalProxyConnError::Io)?
+            .collect(),
+    };
     let mut last_err = None;
 
+    let mut addrs = addrs.into_iter();
     let stream = loop {
         let Some(addr) = addrs.next() else {
             return Err(last_err.unwrap_or_else(|| {
