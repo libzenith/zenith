@@ -381,6 +381,7 @@ mod tests {
             "endpoint_id": "endpoint",
             "project_id": "project",
             "branch_id": "branch",
+            "compute_id": "compute",
             "cold_start_info": "unknown",
         })
     }
