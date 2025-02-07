@@ -560,10 +560,7 @@ lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 	chunk_offs = blkno & (BLOCKS_PER_CHUNK - 1);
 
 	LWLockAcquire(lfc_lock, LW_SHARED);
-<<<<<<< HEAD
 
-=======
->>>>>>> 82d352989 (Fix prefetch test)
 	if (!LFC_ENABLED())
 	{
 		LWLockRelease(lfc_lock);
