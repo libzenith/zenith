@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use postgres_protocol::message::backend::NoticeResponseBody;
 use pq_proto::StartupMessageParams;
 use rustls::pki_types::InvalidDnsNameError;
 use thiserror::Error;
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, ToSocketAddrs};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::backend::ComputeUserInfo;
@@ -180,31 +181,40 @@ impl ConnCfg {
         use postgres_client::config::Host;
 
         // wrap TcpStream::connect with timeout
-        let connect_with_timeout = |host, port| {
-            tokio::time::timeout(timeout, TcpStream::connect((host, port))).map(
-                move |res| match res {
+        async fn connect_with_timeout<A: ToSocketAddrs>(
+            addrs: A,
+            timeout: Duration,
+        ) -> Result<TcpStream, std::io::Error> {
+            tokio::time::timeout(timeout, TcpStream::connect(addrs))
+                .map(move |res| match res {
                     Ok(tcpstream_connect_res) => tcpstream_connect_res,
                     Err(_) => Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         format!("exceeded connection timeout {timeout:?}"),
                     )),
-                },
-            )
-        };
+                })
+                .await
+        }
 
-        let connect_once = |host, port| {
-            debug!("trying to connect to compute node at {host}:{port}");
-            connect_with_timeout(host, port).and_then(|stream| async {
-                let socket_addr = stream.peer_addr()?;
-                let socket = socket2::SockRef::from(&stream);
-                // Disable Nagle's algorithm to not introduce latency between
-                // client and compute.
-                socket.set_nodelay(true)?;
-                // This prevents load balancer from severing the connection.
-                socket.set_keepalive(true)?;
-                Ok((socket_addr, stream))
-            })
-        };
+        // wrap TcpStream::connect with timeout
+        async fn connect_once<A: ToSocketAddrs + Debug>(
+            addrs: A,
+            timeout: Duration,
+        ) -> Result<(SocketAddr, TcpStream), std::io::Error> {
+            debug!("trying to connect to compute node at {addrs:?}");
+            connect_with_timeout(addrs, timeout)
+                .and_then(|stream| async {
+                    let socket_addr = stream.peer_addr()?;
+                    let socket = socket2::SockRef::from(&stream);
+                    // Disable Nagle's algorithm to not introduce latency between
+                    // client and compute.
+                    socket.set_nodelay(true)?;
+                    // This prevents load balancer from severing the connection.
+                    socket.set_keepalive(true)?;
+                    Ok((socket_addr, stream))
+                })
+                .await
+        }
 
         // We can't reuse connection establishing logic from `postgres_client` here,
         // because it has no means for extracting the underlying socket which we
@@ -216,7 +226,12 @@ impl ConnCfg {
             Host::Tcp(host) => host.as_str(),
         };
 
-        match connect_once(host, port).await {
+        let res = match self.0.get_host_addr() {
+            Some(addr) => connect_once((addr, port), timeout).await,
+            None => connect_once((host, port), timeout).await,
+        };
+
+        match res {
             Ok((sockaddr, stream)) => Ok((sockaddr, stream, host)),
             Err(err) => {
                 warn!("couldn't connect to compute node at {host}:{port}: {err}");
