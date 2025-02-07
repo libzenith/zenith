@@ -13,21 +13,15 @@ pub(crate) async fn connect_socket(
     port: u16,
     connect_timeout: Option<Duration>,
 ) -> Result<TcpStream, Error> {
-    if let Some(addr) = host_addr {
-        let addr = SocketAddr::new(addr, port);
-
-        let stream = connect_with_timeout(TcpStream::connect(addr), connect_timeout).await?;
-
-        stream.set_nodelay(true).map_err(Error::connect)?;
-
-        return Ok(stream);
-    }
-
     match host {
         Host::Tcp(host) => {
-            let addrs = net::lookup_host((&**host, port))
-                .await
-                .map_err(Error::connect)?;
+            let addrs = match host_addr {
+                Some(addr) => vec![SocketAddr::new(addr, port)],
+                None => net::lookup_host((&**host, port))
+                    .await
+                    .map_err(Error::connect)?
+                    .collect(),
+            };
 
             let mut last_err = None;
 
