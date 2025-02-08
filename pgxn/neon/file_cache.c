@@ -675,14 +675,23 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		int		iteration_hits = 0;
 		int		iteration_misses = 0;
 		uint64	io_time_us = 0;
+		int     n_blocks_to_read = 0;
 		ConditionVariable* cv;
 
 		Assert(blocks_in_chunk > 0);
 
 		for (int i = 0; i < blocks_in_chunk; i++)
 		{
+			n_blocks_to_read += (BITMAP_ISSET(mask, buf_offset + i) != 0);
 			iov[i].iov_base = buffers[buf_offset + i];
 			iov[i].iov_len = BLCKSZ;
+		}
+		if (n_blocks_to_read == 0)
+		{
+			buf_offset += blocks_in_chunk;
+			nblocks -= blocks_in_chunk;
+			blkno += blocks_in_chunk;
+			continue;
 		}
 
 		tag.blockNum = blkno - chunk_offs;

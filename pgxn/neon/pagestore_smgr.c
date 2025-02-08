@@ -162,7 +162,7 @@ static uint32 local_request_counter;
  * UNUSED ------> REQUESTED --> RECEIVED
  *   ^         :      |            |
  *   |         :      v            |
- *   |         : TAG_UNUSED        |
+ *   |         : TAG_REMAINS       |
  *   |         :      |            |
  *   +----------------+------------+
  *             :
@@ -306,7 +306,7 @@ GetLastWrittenLSNv(NRelFileInfo relfilenode, ForkNumber forknum,
 static void
 neon_get_request_lsns(NRelFileInfo rinfo, ForkNumber forknum,
 					  BlockNumber blkno, neon_request_lsns *output,
-					  BlockNumber nblocks, const bits8 *mask);
+					  BlockNumber nblocks);
 static bool neon_prefetch_response_usable(neon_request_lsns *request_lsns,
 										  PrefetchRequest *slot);
 
@@ -887,7 +887,7 @@ prefetch_do_request(PrefetchRequest *slot, neon_request_lsns *force_request_lsns
 	else
 		neon_get_request_lsns(BufTagGetNRelFileInfo(slot->buftag),
 							  slot->buftag.forkNum, slot->buftag.blockNum,
-							  &slot->request_lsns, 1, NULL);
+							  &slot->request_lsns, 1);
 	request.hdr.lsn = slot->request_lsns.request_lsn;
 	request.hdr.not_modified_since = slot->request_lsns.not_modified_since;
 
@@ -912,6 +912,73 @@ prefetch_do_request(PrefetchRequest *slot, neon_request_lsns *force_request_lsns
 	prfh_insert(MyPState->prf_hash, slot, &found);
 	Assert(!found);
 }
+
+/*
+ * Lookup of already received prefetch requests. Only already received responses matching required LSNs are accepted.
+ * Present pages are marked in "mask" bitmap and total number of such pages is returned.
+ */
+static int
+prefetch_lookupv(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blocknum, neon_request_lsns *lsns,
+				 BlockNumber nblocks, void **buffers, bits8 *mask)
+{
+	int hits = 0;
+	PrefetchRequest hashkey;
+
+	/*
+	 * Use an intermediate PrefetchRequest struct as the hash key to ensure
+	 * correct alignment and that the padding bytes are cleared.
+	 */
+	memset(&hashkey.buftag, 0, sizeof(BufferTag));
+	CopyNRelFileInfoToBufTag(hashkey.buftag, rinfo);
+	hashkey.buftag.forkNum = forknum;
+
+	for (int i = 0; i < nblocks; i++)
+	{
+		PrfHashEntry *entry;
+
+		hashkey.buftag.blockNum = blocknum + i;
+		entry = prfh_lookup(MyPState->prf_hash, &hashkey);
+
+		if (entry != NULL)
+		{
+			PrefetchRequest *slot = entry->slot;
+			uint64 ring_index = slot->my_ring_index;
+			Assert(slot == GetPrfSlot(ring_index));
+
+			Assert(slot->status != PRFS_UNUSED);
+			Assert(MyPState->ring_last <= ring_index &&
+				   ring_index < MyPState->ring_unused);
+			Assert(BufferTagsEqual(&slot->buftag, &hashkey.buftag));
+
+			if (slot->status != PRFS_RECEIVED)
+				continue;
+
+			/*
+			 * If the caller specified a request LSN to use, only accept
+			 * prefetch responses that satisfy that request.
+			 */
+			if (!neon_prefetch_response_usable(&lsns[i], slot))
+				continue;
+
+			memcpy(buffers[i], ((NeonGetPageResponse*)slot->response)->page, BLCKSZ);
+			prefetch_set_unused(ring_index);
+			BITMAP_SET(mask, i);
+
+			hits += 1;
+		}
+	}
+	pgBufferUsage.prefetch.hits += hits;
+	return hits;
+}
+
+#if PG_MAJORVERSION_NUM < 17
+static bool
+prefetch_lookup(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkn, neon_request_lsns *lsns, void *buffer)
+{
+	bits8 lfc_present[PG_IOV_MAX / 8] = {0};
+	return prefetch_lookupv(rinfo, forkNum, blkn, lsns, 1, &buffer, lfc_present) != 0;
+}
+#endif
 
 /*
  * prefetch_register_bufferv() - register and prefetch buffers
@@ -1036,8 +1103,6 @@ Retry:
 					/* The buffered request is good enough, return that index */
 					if (is_prefetch)
 						pgBufferUsage.prefetch.duplicates++;
-					else
-						pgBufferUsage.prefetch.hits++;
 					continue;
 				}
 			}
@@ -2080,8 +2145,7 @@ GetLastWrittenLSNv(NRelFileInfo relfilenode, ForkNumber forknum,
  */
 static void
 neon_get_request_lsns(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
-					  neon_request_lsns *output, BlockNumber nblocks,
-					  const bits8 *mask)
+					  neon_request_lsns *output, BlockNumber nblocks)
 {
 	XLogRecPtr	last_written_lsns[PG_IOV_MAX];
 
@@ -2169,9 +2233,6 @@ neon_get_request_lsns(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 			neon_request_lsns *result = &output[i];
 			XLogRecPtr	last_written_lsn = last_written_lsns[i];
 
-			if (PointerIsValid(mask) && !BITMAP_ISSET(mask, i))
-				continue;
-
 			if (last_written_lsn > replay_lsn)
 			{
 				/* GetCurrentReplayRecPtr was introduced in v15 */
@@ -2214,8 +2275,6 @@ neon_get_request_lsns(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 			neon_request_lsns *result = &output[i];
 			XLogRecPtr	last_written_lsn = last_written_lsns[i];
 
-			if (PointerIsValid(mask) && !BITMAP_ISSET(mask, i))
-				continue;
 			/*
 			 * Use the latest LSN that was evicted from the buffer cache as the
 			 * 'not_modified_since' hint. Any pages modified by later WAL records
@@ -2437,7 +2496,7 @@ neon_exists(SMgrRelation reln, ForkNumber forkNum)
 	}
 
 	neon_get_request_lsns(InfoFromSMgrRel(reln), forkNum,
-						  REL_METADATA_PSEUDO_BLOCKNO, &request_lsns, 1, NULL);
+						  REL_METADATA_PSEUDO_BLOCKNO, &request_lsns, 1);
 	{
 		NeonExistsRequest request = {
 			.hdr.tag = T_NeonExistsRequest,
@@ -2856,8 +2915,7 @@ neon_prefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	while (nblocks > 0)
 	{
 		int		iterblocks = Min(nblocks, PG_IOV_MAX);
-		bits8		lfc_present[PG_IOV_MAX / 8];
-		memset(lfc_present, 0, sizeof(lfc_present));
+		bits8	lfc_present[PG_IOV_MAX / 8] = {0};
 
 		if (lfc_cache_containsv(InfoFromSMgrRel(reln), forknum, blocknum,
 								iterblocks, lfc_present) == iterblocks)
@@ -3216,17 +3274,25 @@ neon_read(SMgrRelation reln, ForkNumber forkNum, BlockNumber blkno, void *buffer
 			neon_log(ERROR, "unknown relpersistence '%c'", reln->smgr_relpersistence);
 	}
 
-	/* Try to read from local file cache */
+	/* Try to read PS reponses if they are available */
+	prefetch_pump_state();
+
+	neon_get_request_lsns(InfoFromSMgrRel(reln), forkNum, blkno, &request_lsns, 1);
+
+	if (prefetch_lookup(InfoFromSMgrRel(reln), forkNum, blkno, &request_lsns, buffer))
+	{
+		/* Prefetch hit */
+		return;
+	}
+
+    /* Try to read from local file cache */
 	if (lfc_read(InfoFromSMgrRel(reln), forkNum, blkno, buffer))
 	{
 		MyNeonCounters->file_cache_hits_total++;
 		return;
 	}
 
-	neon_get_request_lsns(InfoFromSMgrRel(reln), forkNum, blkno, &request_lsns, 1, NULL);
 	neon_read_at_lsn(InfoFromSMgrRel(reln), forkNum, blkno, request_lsns, buffer);
-
-	prefetch_pump_state();
 
 #ifdef DEBUG_COMPARE_LOCAL
 	if (forkNum == MAIN_FORKNUM && IS_LOCAL_REL(reln))
@@ -3306,11 +3372,14 @@ neon_read(SMgrRelation reln, ForkNumber forkNum, BlockNumber blkno, void *buffer
 #if PG_MAJORVERSION_NUM >= 17
 static void
 neon_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
-		void **buffers, BlockNumber nblocks)
+		   void **buffers, BlockNumber nblocks)
 {
+	bits8		lfc_hits[PG_IOV_MAX / 8] = {0};
+	bits8		prefetch_hits[PG_IOV_MAX / 8];
 	bits8		read[PG_IOV_MAX / 8];
 	neon_request_lsns request_lsns[PG_IOV_MAX];
 	int			lfc_result;
+	int			prefetch_result;
 
 	switch (reln->smgr_relpersistence)
 	{
@@ -3333,39 +3402,48 @@ neon_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		neon_log(ERROR, "Read request too large: %d is larger than max %d",
 				 nblocks, PG_IOV_MAX);
 
-	memset(read, 0, sizeof(read));
+	/* Try to read PS reponses if they are available */
+	prefetch_pump_state();
+
+	neon_get_request_lsns(InfoFromSMgrRel(reln), forknum, blocknum,
+						  request_lsns, nblocks);
+
+
+	prefetch_result = prefetch_lookupv(InfoFromSMgrRel(reln), forknum, blocknum, request_lsns, nblocks, buffers, prefetch_hits);
+
+	if (prefetch_result == nblocks)
+		return;
+
+	/* invert the result: exclude prefetched blocks */
+	for (int i = 0; i < PG_IOV_MAX / 8; i++)
+		lfc_hits[i] = ~prefetch_hits[i];
 
 	/* Try to read from local file cache */
 	lfc_result = lfc_readv_select(InfoFromSMgrRel(reln), forknum, blocknum, buffers,
-								  nblocks, read);
+								  nblocks, lfc_hits);
 
 	if (lfc_result > 0)
 		MyNeonCounters->file_cache_hits_total += lfc_result;
 
 	/* Read all blocks from LFC, so we're done */
-	if (lfc_result == nblocks)
+	if (prefetch_result + lfc_result == nblocks)
 		return;
 
 	if (lfc_result == -1)
 	{
 		/* can't use the LFC result, so read all blocks from PS */
 		for (int i = 0; i < PG_IOV_MAX / 8; i++)
-			read[i] = 0xFF;
+			read[i] = ~prefetch_hits[i];
 	}
 	else
 	{
 		/* invert the result: exclude blocks read from lfc */
 		for (int i = 0; i < PG_IOV_MAX / 8; i++)
-			read[i] = ~(read[i]);
+			read[i] = ~(prefetch_hits[i] | lfc_hits[i]);
 	}
-
-	neon_get_request_lsns(InfoFromSMgrRel(reln), forknum, blocknum,
-						  request_lsns, nblocks, read);
 
 	neon_read_at_lsnv(InfoFromSMgrRel(reln), forknum, blocknum, request_lsns,
 					  buffers, nblocks, read);
-
-	prefetch_pump_state();
 
 #ifdef DEBUG_COMPARE_LOCAL
 	if (forkNum == MAIN_FORKNUM && IS_LOCAL_REL(reln))
@@ -3636,7 +3714,7 @@ neon_nblocks(SMgrRelation reln, ForkNumber forknum)
 	}
 
 	neon_get_request_lsns(InfoFromSMgrRel(reln), forknum,
-						  REL_METADATA_PSEUDO_BLOCKNO, &request_lsns, 1, NULL);
+						  REL_METADATA_PSEUDO_BLOCKNO, &request_lsns, 1);
 
 	{
 		NeonNblocksRequest request = {
@@ -3721,7 +3799,7 @@ neon_dbsize(Oid dbNode)
 	NRelFileInfo dummy_node = {0};
 
 	neon_get_request_lsns(dummy_node, MAIN_FORKNUM,
-						  REL_METADATA_PSEUDO_BLOCKNO, &request_lsns, 1, NULL);
+						  REL_METADATA_PSEUDO_BLOCKNO, &request_lsns, 1);
 
 	{
 		NeonDbSizeRequest request = {
