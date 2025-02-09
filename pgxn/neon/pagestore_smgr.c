@@ -975,8 +975,8 @@ prefetch_lookupv(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blocknum, n
 static bool
 prefetch_lookup(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkn, neon_request_lsns *lsns, void *buffer)
 {
-	bits8 lfc_present[PG_IOV_MAX / 8] = {0};
-	return prefetch_lookupv(rinfo, forkNum, blkn, lsns, 1, &buffer, lfc_present) != 0;
+	bits8 present = 0;
+	return prefetch_lookupv(rinfo, forkNum, blkn, lsns, 1, &buffer, &present) != 0;
 }
 #endif
 
