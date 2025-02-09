@@ -3285,7 +3285,7 @@ neon_read(SMgrRelation reln, ForkNumber forkNum, BlockNumber blkno, void *buffer
 		return;
 	}
 
-    /* Try to read from local file cache */
+	/* Try to read from local file cache */
 	if (lfc_read(InfoFromSMgrRel(reln), forkNum, blkno, buffer))
 	{
 		MyNeonCounters->file_cache_hits_total++;
@@ -3374,8 +3374,8 @@ static void
 neon_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		   void **buffers, BlockNumber nblocks)
 {
-	bits8		lfc_hits[PG_IOV_MAX / 8] = {0};
-	bits8		prefetch_hits[PG_IOV_MAX / 8];
+	bits8		prefetch_hits[PG_IOV_MAX / 8] = {0};
+	bits8		lfc_hits[PG_IOV_MAX / 8];
 	bits8		read[PG_IOV_MAX / 8];
 	neon_request_lsns request_lsns[PG_IOV_MAX];
 	int			lfc_result;
@@ -3429,7 +3429,7 @@ neon_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	if (prefetch_result + lfc_result == nblocks)
 		return;
 
-	if (lfc_result == -1)
+	if (lfc_result <= 0)
 	{
 		/* can't use the LFC result, so read all blocks from PS */
 		for (int i = 0; i < PG_IOV_MAX / 8; i++)

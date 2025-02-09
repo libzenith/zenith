@@ -648,10 +648,10 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 	int			buf_offset = 0;
 
 	if (lfc_maybe_disabled())	/* fast exit if file cache is disabled */
-		return 0;
+		return -1;
 
 	if (!lfc_ensure_opened())
-		return 0;
+		return -1;
 
 	CopyNRelFileInfoToBufTag(tag, rinfo);
 	tag.forkNum = forkNum;
@@ -685,6 +685,7 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 			n_blocks_to_read += (BITMAP_ISSET(mask, buf_offset + i) != 0);
 			iov[i].iov_base = buffers[buf_offset + i];
 			iov[i].iov_len = BLCKSZ;
+			BITMAP_CLR(mask,  buf_offset + i);
 		}
 		if (n_blocks_to_read == 0)
 		{
