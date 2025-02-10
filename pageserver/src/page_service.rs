@@ -9,7 +9,7 @@ use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use pageserver_api::config::{
     PageServicePipeliningConfig, PageServicePipeliningConfigPipelined,
-    PageServiceProtocolPipelinedExecutionStrategy,
+    PageServiceProtocolPipelinedExecutionStrategy, Tracing,
 };
 use pageserver_api::models::{self, TenantState};
 use pageserver_api::models::{
@@ -26,6 +26,7 @@ use postgres_backend::{
 use pq_proto::framed::ConnectionError;
 use pq_proto::FeStartupPacket;
 use pq_proto::{BeMessage, FeMessage, RowDescriptor};
+use rand::Rng;
 use std::borrow::Cow;
 use std::io;
 use std::num::NonZeroUsize;
@@ -39,6 +40,7 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
+use utils::logging::PERF_TRACE_TARGET;
 use utils::sync::gate::{Gate, GateGuard};
 use utils::sync::spsc_fold;
 use utils::{
@@ -587,6 +589,7 @@ impl std::fmt::Display for BatchedPageStreamError {
 struct BatchedGetPageRequest {
     req: PagestreamGetPageRequest,
     timer: SmgrOpTimer,
+    ctx: RequestContext,
 }
 
 #[cfg(feature = "testing")]
@@ -718,6 +721,7 @@ impl PageServerHandler {
         tenant_id: TenantId,
         timeline_id: TimelineId,
         timeline_handles: &mut TimelineHandles,
+        tracing_config: Option<&Tracing>,
         cancel: &CancellationToken,
         ctx: &RequestContext,
         protocol_version: PagestreamProtocolVersion,
@@ -877,10 +881,55 @@ impl PageServerHandler {
                 }
 
                 let key = rel_block_to_key(req.rel, req.blkno);
-                let shard = match timeline_handles
-                    .get(tenant_id, timeline_id, ShardSelector::Page(key))
-                    .await
-                {
+
+                let sampled = match tracing_config {
+                    Some(conf) => {
+                        let ratio = &conf.sampling_ratio;
+
+                        if ratio.numerator == 0 {
+                            false
+                        } else {
+                            rand::thread_rng().gen_range(0..ratio.denominator) < ratio.numerator
+                        }
+                    }
+                    None => false,
+                };
+
+                let get_page_context = if sampled {
+                    RequestContextBuilder::from(ctx)
+                        .root_perf_span(|| {
+                            info_span!(
+                            target: PERF_TRACE_TARGET,
+                            "GET_PAGE",
+                            tenant_id = %tenant_id,
+                            timeline_id = %timeline_id,
+                            lsn = %req.hdr.request_lsn,
+                            request_id = %req.hdr.reqid,
+                            key = %key)
+                        })
+                        .attached_child()
+                } else {
+                    ctx.attached_child()
+                };
+
+                let res = get_page_context
+                    .maybe_instrument(
+                        timeline_handles.get(tenant_id, timeline_id, ShardSelector::Page(key)),
+                        |current_perf_span| {
+                            info_span!(
+                                target: PERF_TRACE_TARGET,
+                                parent: current_perf_span,
+                                "SHARD_SELECTION",
+                                tenant_id = %tenant_id,
+                                timeline_id = %timeline_id,
+                                lsn = %req.hdr.request_lsn,
+                                request_id = %req.hdr.reqid
+                            )
+                        },
+                    )
+                    .await;
+
+                let shard = match res {
                     Ok(tl) => tl,
                     Err(e) => {
                         let span = mkspan!(before shard routing);
@@ -909,24 +958,59 @@ impl PageServerHandler {
                 };
                 let span = mkspan!(shard.tenant_shard_id.shard_slug());
 
-                let timer = record_op_start_and_throttle(
-                    &shard,
-                    metrics::SmgrQueryType::GetPageAtLsn,
-                    received_at,
-                )
-                .await?;
+                // TODO(vlad): why does this not show up?
+                get_page_context.perf_span_record(
+                    "shard",
+                    tracing::field::display(shard.get_shard_identity().shard_slug()),
+                );
+
+                let timer = get_page_context
+                    .maybe_instrument(
+                        record_op_start_and_throttle(
+                            &shard,
+                            metrics::SmgrQueryType::GetPageAtLsn,
+                            received_at,
+                        ),
+                        |current_perf_span| {
+                            info_span!(
+                                target: PERF_TRACE_TARGET,
+                                parent: current_perf_span,
+                                "THROTTLE",
+                                tenant_id = %tenant_id,
+                                timeline_id = %timeline_id,
+                                lsn = %req.hdr.request_lsn,
+                                request_id = %req.hdr.reqid
+                            )
+                        },
+                    )
+                    .await?;
 
                 // We're holding the Handle
-                let effective_request_lsn = match Self::wait_or_get_last_lsn(
-                    &shard,
-                    req.hdr.request_lsn,
-                    req.hdr.not_modified_since,
-                    &shard.get_latest_gc_cutoff_lsn(),
-                    ctx,
-                )
                 // TODO: if we actually need to wait for lsn here, it delays the entire batch which doesn't need to wait
-                .await
-                {
+                let res = get_page_context
+                    .maybe_instrument(
+                        Self::wait_or_get_last_lsn(
+                            &shard,
+                            req.hdr.request_lsn,
+                            req.hdr.not_modified_since,
+                            &shard.get_latest_gc_cutoff_lsn(),
+                            ctx,
+                        ),
+                        |current_perf_span| {
+                            info_span!(
+                                target: PERF_TRACE_TARGET,
+                                parent: current_perf_span,
+                                "WAIT_LSN",
+                                tenant_id = %tenant_id,
+                                timeline_id = %timeline_id,
+                                lsn = %req.hdr.request_lsn,
+                                request_id = %req.hdr.reqid
+                            )
+                        },
+                    )
+                    .await;
+
+                let effective_request_lsn = match res {
                     Ok(lsn) => lsn,
                     Err(e) => {
                         return respond_error!(span, e);
@@ -936,7 +1020,11 @@ impl PageServerHandler {
                     span,
                     shard: shard.downgrade(),
                     effective_request_lsn,
-                    pages: smallvec::smallvec![BatchedGetPageRequest { req, timer }],
+                    pages: smallvec::smallvec![BatchedGetPageRequest {
+                        req,
+                        timer,
+                        ctx: get_page_context
+                    }],
                 }
             }
             #[cfg(feature = "testing")]
@@ -1433,12 +1521,15 @@ impl PageServerHandler {
         IO: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     {
         let cancel = self.cancel.clone();
+        let tracing_config = self.conf.tracing.clone();
+
         let err = loop {
             let msg = Self::pagestream_read_message(
                 &mut pgb_reader,
                 tenant_id,
                 timeline_id,
                 &mut timeline_handles,
+                tracing_config.as_ref(),
                 &cancel,
                 ctx,
                 protocol_version,
@@ -1572,6 +1663,8 @@ impl PageServerHandler {
         // Batcher
         //
 
+        let tracing_config = self.conf.tracing.clone();
+
         let cancel_batcher = self.cancel.child_token();
         let (mut batch_tx, mut batch_rx) = spsc_fold::channel();
         let batcher = pipeline_stage!("batcher", cancel_batcher.clone(), move |cancel_batcher| {
@@ -1585,6 +1678,7 @@ impl PageServerHandler {
                         tenant_id,
                         timeline_id,
                         &mut timeline_handles,
+                        tracing_config.as_ref(),
                         &cancel_batcher,
                         &ctx,
                         protocol_version,
@@ -1916,7 +2010,9 @@ impl PageServerHandler {
 
         let results = timeline
             .get_rel_page_at_lsn_batched(
-                requests.iter().map(|p| (&p.req.rel, &p.req.blkno)),
+                requests
+                    .iter()
+                    .map(|p| (&p.req.rel, &p.req.blkno, p.ctx.attached_child())),
                 effective_lsn,
                 io_concurrency,
                 ctx,
