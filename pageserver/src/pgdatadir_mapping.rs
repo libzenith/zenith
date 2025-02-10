@@ -1749,6 +1749,10 @@ impl DatadirModification<'_> {
             })?;
             self.pending_directory_entries
                 .push((DirectoryKind::Rel, MetricsUpdate::Set(0)));
+            if self.tline.get_rel_size_v2_enabled() {
+                self.pending_directory_entries
+                    .push((DirectoryKind::RelV2, MetricsUpdate::Set(0)));
+            }
             self.put(
                 rel_dir_to_key(spcnode, dbnode),
                 Value::Image(Bytes::from(buf)),
@@ -1920,6 +1924,10 @@ impl DatadirModification<'_> {
         if !dbdir_exists {
             self.pending_directory_entries
                 .push((DirectoryKind::Rel, MetricsUpdate::Set(0)));
+            if self.tline.get_rel_size_v2_enabled() {
+                self.pending_directory_entries
+                    .push((DirectoryKind::RelV2, MetricsUpdate::Set(0)));
+            }
         }
 
         if !self.tline.get_rel_size_v2_enabled() {
@@ -1943,7 +1951,7 @@ impl DatadirModification<'_> {
                 );
             }
             self.pending_directory_entries
-                .push((DirectoryKind::Rel, MetricsUpdate::Add(1)));
+                .push((DirectoryKind::RelV2, MetricsUpdate::Add(1)));
         }
 
         // Put size
@@ -2044,7 +2052,7 @@ impl DatadirModification<'_> {
                         rel_tag_sparse_key(spc_node, db_node, rel_tag.relnode, rel_tag.forknum);
                     if self.sparse_get(key, ctx).await?.is_some() {
                         self.pending_directory_entries
-                            .push((DirectoryKind::Rel, MetricsUpdate::Sub(1)));
+                            .push((DirectoryKind::RelV2, MetricsUpdate::Sub(1)));
                         // put tombstone
                         self.put(key, Value::Image(SPARSE_TOMBSTONE_MARKER.clone()));
                         // no need to set dirty to true
@@ -2635,6 +2643,7 @@ pub(crate) enum DirectoryKind {
     Rel,
     AuxFiles,
     SlruSegment(SlruKind),
+    RelV2,
 }
 
 impl DirectoryKind {
