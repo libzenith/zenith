@@ -50,12 +50,13 @@ use clap::Parser;
 use compute_tools::disk_quota::set_disk_quota;
 use compute_tools::http::server::Server;
 use compute_tools::lsn_lease::launch_lsn_lease_bg_task_for_static;
+use jsonwebtoken::jwk::JwkSet;
 use signal_hook::consts::{SIGQUIT, SIGTERM};
 use signal_hook::{consts::SIGINT, iterator::Signals};
 use tracing::{error, info, warn};
 use url::Url;
 
-use compute_api::responses::ComputeStatus;
+use compute_api::responses::{ComputeCtlConfig, ComputeStatus};
 use compute_api::spec::ComputeSpec;
 
 use compute_tools::compute::{
@@ -281,6 +282,11 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
         info!("got spec from cli argument {}", spec_json);
         return Ok(CliSpecParams {
             spec: Some(serde_json::from_str(spec_json)?),
+            compute_ctl_config: ComputeCtlConfig {
+                jwks: JwkSet {
+                    keys: Vec::default(),
+                },
+            },
             live_config_allowed: false,
         });
     }
@@ -290,6 +296,11 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
         let file = File::open(Path::new(spec_path))?;
         return Ok(CliSpecParams {
             spec: Some(serde_json::from_reader(file)?),
+            compute_ctl_config: ComputeCtlConfig {
+                jwks: JwkSet {
+                    keys: Vec::default(),
+                },
+            },
             live_config_allowed: true,
         });
     }
@@ -299,8 +310,9 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
     };
 
     match get_spec_from_control_plane(cli.control_plane_uri.as_ref().unwrap(), &cli.compute_id) {
-        Ok(spec) => Ok(CliSpecParams {
-            spec,
+        Ok(resp) => Ok(CliSpecParams {
+            spec: resp.0,
+            compute_ctl_config: resp.1,
             live_config_allowed: true,
         }),
         Err(e) => {
@@ -317,6 +329,8 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
 struct CliSpecParams {
     /// If a spec was provided via CLI or file, the [`ComputeSpec`]
     spec: Option<ComputeSpec>,
+    #[allow(dead_code)]
+    compute_ctl_config: ComputeCtlConfig,
     live_config_allowed: bool,
 }
 
@@ -326,6 +340,7 @@ fn wait_spec(
     CliSpecParams {
         spec,
         live_config_allowed,
+        compute_ctl_config: _,
     }: CliSpecParams,
 ) -> Result<Arc<ComputeNode>> {
     let mut new_state = ComputeState::new();

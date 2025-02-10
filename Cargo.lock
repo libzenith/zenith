@@ -1293,6 +1293,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "jsonwebtoken",
  "regex",
  "remote_storage",
  "serde",
@@ -1320,6 +1321,7 @@ dependencies = [
  "flate2",
  "futures",
  "http 1.1.0",
+ "jsonwebtoken",
  "metrics",
  "nix 0.27.1",
  "notify",
