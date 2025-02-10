@@ -507,7 +507,9 @@ impl Timeline {
             // Fast path: if the relation exists in the new format, return true.
             // TODO: we should have a verification mode that checks both keyspaces
             // to ensure the relation only exists in one of them.
-            return Ok(exists_v2);
+            if exists_v2 {
+                return Ok(true);
+            }
         }
 
         // fetch directory listing (old)
