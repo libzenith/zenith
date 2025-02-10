@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Display};
+use std::time::Duration;
 
 use futures::Future;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +28,11 @@ pub async fn exponential_backoff(
             .await,
         )
     }
+}
+
+pub fn exponential_backoff_duration(n: u32, base_increment: f64, max_seconds: f64) -> Duration {
+    let seconds = exponential_backoff_duration_seconds(n, base_increment, max_seconds);
+    Duration::from_secs_f64(seconds)
 }
 
 pub fn exponential_backoff_duration_seconds(n: u32, base_increment: f64, max_seconds: f64) -> f64 {

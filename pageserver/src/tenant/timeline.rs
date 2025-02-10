@@ -45,11 +45,9 @@ use rand::Rng;
 use remote_storage::DownloadError;
 use serde_with::serde_as;
 use storage_broker::BrokerClientChannel;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc::Sender;
-use tokio::{
-    runtime::Handle,
-    sync::{oneshot, watch},
-};
+use tokio::sync::{oneshot, watch, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 use utils::critical;
@@ -227,6 +225,7 @@ pub struct TimelineResources {
     pub remote_client: RemoteTimelineClient,
     pub pagestream_throttle: Arc<crate::tenant::throttle::Throttle>,
     pub pagestream_throttle_metrics: Arc<crate::metrics::tenant_throttling::Pagestream>,
+    pub l0_compaction_trigger: Arc<Notify>,
     pub l0_flush_global_state: l0_flush::L0FlushGlobalState,
 }
 
@@ -426,6 +425,9 @@ pub struct Timeline {
 
     /// If true, the last compaction failed.
     compaction_failed: AtomicBool,
+
+    /// Notifies the tenant compaction loop that there is pending L0 compaction work.
+    l0_compaction_trigger: Arc<Notify>,
 
     /// Make sure we only have one running gc at a time.
     ///
@@ -2674,6 +2676,7 @@ impl Timeline {
 
                 compaction_lock: tokio::sync::Mutex::default(),
                 compaction_failed: AtomicBool::default(),
+                l0_compaction_trigger: resources.l0_compaction_trigger,
                 gc_lock: tokio::sync::Mutex::default(),
 
                 standby_horizon: AtomicLsn::new(0),
@@ -4051,6 +4054,12 @@ impl Timeline {
                     }
                 }
                 let flush_duration = flush_timer.stop_and_record();
+
+                // Notify the tenant compaction loop if L0 compaction is needed.
+                let l0_count = *watch_l0.borrow();
+                if l0_count >= self.get_compaction_threshold() {
+                    self.l0_compaction_trigger.notify_one();
+                }
 
                 // Delay the next flush to backpressure if compaction can't keep up. We delay by the
                 // flush duration such that the flush takes 2x as long. This is propagated up to WAL

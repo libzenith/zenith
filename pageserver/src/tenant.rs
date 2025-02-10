@@ -56,6 +56,7 @@ use timeline::CompactOptions;
 use timeline::ShutdownMode;
 use tokio::io::BufReader;
 use tokio::sync::watch;
+use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
@@ -349,6 +350,9 @@ pub struct Tenant {
     /// Track repeated failures to compact, so that we can back off.
     /// Overhead of mutex is acceptable because compaction is done with a multi-second period.
     compaction_circuit_breaker: std::sync::Mutex<CircuitBreaker>,
+
+    /// Signals the tenant compaction loop that there is L0 compaction work to be done.
+    pub(crate) l0_compaction_trigger: Arc<Notify>,
 
     /// Scheduled gc-compaction tasks.
     scheduled_compaction_tasks: std::sync::Mutex<HashMap<TimelineId, Arc<GcCompactionQueue>>>,
@@ -1691,12 +1695,7 @@ impl Tenant {
                     timeline_id,
                     index_part,
                     remote_metadata,
-                    TimelineResources {
-                        remote_client,
-                        pagestream_throttle: self.pagestream_throttle.clone(),
-                        pagestream_throttle_metrics: self.pagestream_throttle_metrics.clone(),
-                        l0_flush_global_state: self.l0_flush_global_state.clone(),
-                    },
+                    self.get_timeline_resources_for(remote_client),
                     LoadTimelineCause::Attach,
                     ctx,
                 )
@@ -4119,6 +4118,7 @@ impl Tenant {
                 // use an extremely long backoff.
                 Some(Duration::from_secs(3600 * 24)),
             )),
+            l0_compaction_trigger: Arc::new(Notify::new()),
             scheduled_compaction_tasks: Mutex::new(Default::default()),
             activate_now_sem: tokio::sync::Semaphore::new(0),
             attach_wal_lag_cooldown: Arc::new(std::sync::OnceLock::new()),
@@ -5027,12 +5027,19 @@ impl Tenant {
         )
     }
 
-    /// Call this before constructing a timeline, to build its required structures
+    /// Builds required resources for a new timeline.
     fn build_timeline_resources(&self, timeline_id: TimelineId) -> TimelineResources {
+        let remote_client = self.build_timeline_remote_client(timeline_id);
+        self.get_timeline_resources_for(remote_client)
+    }
+
+    /// Builds timeline resources for the given remote client.
+    fn get_timeline_resources_for(&self, remote_client: RemoteTimelineClient) -> TimelineResources {
         TimelineResources {
-            remote_client: self.build_timeline_remote_client(timeline_id),
+            remote_client,
             pagestream_throttle: self.pagestream_throttle.clone(),
             pagestream_throttle_metrics: self.pagestream_throttle_metrics.clone(),
+            l0_compaction_trigger: self.l0_compaction_trigger.clone(),
             l0_flush_global_state: self.l0_flush_global_state.clone(),
         }
     }

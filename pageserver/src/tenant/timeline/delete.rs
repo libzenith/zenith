@@ -17,12 +17,10 @@ use crate::{
         metadata::TimelineMetadata,
         remote_timeline_client::{PersistIndexPartWithDeletedFlagError, RemoteTimelineClient},
         CreateTimelineCause, DeleteTimelineError, MaybeDeletedIndexPart, Tenant,
-        TenantManifestError, TimelineOrOffloaded,
+        TenantManifestError, Timeline, TimelineOrOffloaded,
     },
     virtual_file::MaybeFatalIo,
 };
-
-use super::{Timeline, TimelineResources};
 
 /// Mark timeline as deleted in S3 so we won't pick it up next time
 /// during attach or pageserver restart.
@@ -296,12 +294,7 @@ impl DeleteTimelineFlow {
                 timeline_id,
                 local_metadata,
                 None, // Ancestor is not needed for deletion.
-                TimelineResources {
-                    remote_client,
-                    pagestream_throttle: tenant.pagestream_throttle.clone(),
-                    pagestream_throttle_metrics: tenant.pagestream_throttle_metrics.clone(),
-                    l0_flush_global_state: tenant.l0_flush_global_state.clone(),
-                },
+                tenant.get_timeline_resources_for(remote_client),
                 // Important. We dont pass ancestor above because it can be missing.
                 // Thus we need to skip the validation here.
                 CreateTimelineCause::Delete,

@@ -41,6 +41,7 @@ use std::process::exit;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc, Condvar, Mutex, RwLock};
+use std::time::SystemTime;
 use std::{thread, time::Duration};
 
 use anyhow::{Context, Result};
@@ -83,6 +84,19 @@ fn parse_remote_ext_config(arg: &str) -> Result<String> {
     } else {
         Ok("http://pg-ext-s3-gateway".to_string())
     }
+}
+
+/// Generate a compute ID if one is not supplied. This exists to keep forward
+/// compatibility tests working, but will be removed in a future iteration.
+fn generate_compute_id() -> String {
+    let now = SystemTime::now();
+
+    format!(
+        "compute-{}",
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    )
 }
 
 #[derive(Parser)]
@@ -130,7 +144,7 @@ struct Cli {
     #[arg(short = 'S', long, group = "spec-path")]
     pub spec_path: Option<OsString>,
 
-    #[arg(short = 'i', long, group = "compute-id")]
+    #[arg(short = 'i', long, group = "compute-id", default_value = generate_compute_id())]
     pub compute_id: String,
 
     #[arg(short = 'p', long, conflicts_with_all = ["spec", "spec-path"], value_name = "CONTROL_PLANE_API_BASE_URL")]

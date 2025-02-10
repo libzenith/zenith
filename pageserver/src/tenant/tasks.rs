@@ -22,9 +22,10 @@ use crate::tenant::timeline::compaction::CompactionOutcome;
 use crate::tenant::timeline::CompactionError;
 use crate::tenant::{Tenant, TenantState};
 use pageserver_api::config::tenant_conf_defaults::DEFAULT_COMPACTION_PERIOD;
+use utils::backoff::exponential_backoff_duration;
 use utils::completion::Barrier;
+use utils::pausable_failpoint;
 use utils::rate_limit::RateLimit;
-use utils::{backoff, pausable_failpoint};
 
 /// Semaphore limiting concurrent background tasks (across all tenants).
 ///
@@ -211,89 +212,93 @@ pub fn start_background_loops(tenant: &Arc<Tenant>, can_start: Option<&Barrier>)
 
 /// Compaction task's main loop.
 async fn compaction_loop(tenant: Arc<Tenant>, cancel: CancellationToken) {
+    const BASE_BACKOFF_SECS: f64 = 1.0;
     const MAX_BACKOFF_SECS: f64 = 300.0;
+    const RECHECK_CONFIG_INTERVAL: Duration = Duration::from_secs(10);
 
     let ctx = RequestContext::todo_child(TaskKind::Compaction, DownloadBehavior::Download);
-    let mut first = true;
+    let mut period = tenant.get_compaction_period();
     let mut error_run = 0; // consecutive errors
 
+    // Stagger the compaction loop across tenants.
+    if wait_for_active_tenant(&tenant, &cancel).await.is_break() {
+        return;
+    }
+    if sleep_random(period, &cancel).await.is_err() {
+        return;
+    }
+
     loop {
+        // Recheck that we're still active.
         if wait_for_active_tenant(&tenant, &cancel).await.is_break() {
             return;
         }
 
-        let period = tenant.get_compaction_period();
-
-        // TODO: we shouldn't need to await to find tenant and this could be moved outside of
-        // loop, #3501. There are also additional "allowed_errors" in tests.
-        if first {
-            first = false;
-            if sleep_random(period, &cancel).await.is_err() {
-                break;
-            }
-        }
-
-        let sleep_duration;
+        // Refresh the period. If compaction is disabled, check again in a bit.
+        period = tenant.get_compaction_period();
         if period == Duration::ZERO {
             #[cfg(not(feature = "testing"))]
             info!("automatic compaction is disabled");
-            // check again in 10 seconds, in case it's been enabled again.
-            sleep_duration = Duration::from_secs(10)
-        } else {
-            let iteration = Iteration {
-                started_at: Instant::now(),
-                period,
-                kind: BackgroundLoopKind::Compaction,
-            };
+            tokio::select! {
+                _ = tokio::time::sleep(RECHECK_CONFIG_INTERVAL) => {},
+                _ = cancel.cancelled() => return,
+            }
+            continue;
+        }
 
-            // Run compaction
-            let IterationResult { output, elapsed } = iteration
-                .run(tenant.compaction_iteration(&cancel, &ctx))
-                .await;
-            match output {
-                Ok(outcome) => {
-                    error_run = 0;
-                    // schedule the next compaction immediately in case there is a pending compaction task
-                    sleep_duration = if let CompactionOutcome::Pending = outcome {
-                        Duration::from_secs(1)
-                    } else {
-                        period
-                    };
-                }
-                Err(err) => {
-                    let wait_duration = backoff::exponential_backoff_duration_seconds(
-                        error_run + 1,
-                        1.0,
-                        MAX_BACKOFF_SECS,
-                    );
-                    error_run += 1;
-                    let wait_duration = Duration::from_secs_f64(wait_duration);
-                    log_compaction_error(&err, error_run, &wait_duration, cancel.is_cancelled());
-                    sleep_duration = wait_duration;
+        // Wait for the next compaction run.
+        let backoff = exponential_backoff_duration(error_run, BASE_BACKOFF_SECS, MAX_BACKOFF_SECS);
+        tokio::select! {
+            _ = tokio::time::sleep(backoff), if error_run > 0 => {},
+            _ = tokio::time::sleep(period), if error_run == 0 => {},
+            _ = tenant.l0_compaction_trigger.notified(), if error_run == 0 => {},
+            _ = cancel.cancelled() => return,
+        }
+
+        // Run compaction.
+        let iteration = Iteration {
+            started_at: Instant::now(),
+            period,
+            kind: BackgroundLoopKind::Compaction,
+        };
+        let IterationResult { output, elapsed } = iteration
+            .run(tenant.compaction_iteration(&cancel, &ctx))
+            .await;
+
+        match output {
+            Ok(outcome) => {
+                error_run = 0;
+                // If there's more compaction work pending, reschedule immediately. This isn't
+                // necessarily L0 compaction, but that's fine for now.
+                //
+                // TODO: differentiate between L0 compaction and other compaction. The former needs
+                // to be responsive, the latter doesn't.
+                if outcome == CompactionOutcome::Pending {
+                    tenant.l0_compaction_trigger.notify_one();
                 }
             }
 
-            // the duration is recorded by performance tests by enabling debug in this function
-            debug!(
-                elapsed_ms = elapsed.as_millis(),
-                "compaction iteration complete"
-            );
-        };
-
-        // Sleep
-        if tokio::time::timeout(sleep_duration, cancel.cancelled())
-            .await
-            .is_ok()
-        {
-            break;
+            Err(err) => {
+                error_run += 1;
+                let backoff =
+                    exponential_backoff_duration(error_run, BASE_BACKOFF_SECS, MAX_BACKOFF_SECS);
+                log_compaction_error(&err, error_run, backoff, cancel.is_cancelled());
+                continue;
+            }
         }
+
+        // NB: this log entry is recorded by performance tests.
+        debug!(
+            elapsed_ms = elapsed.as_millis(),
+            "compaction iteration complete"
+        );
     }
 }
 
 fn log_compaction_error(
     err: &CompactionError,
     error_count: u32,
-    sleep_duration: &Duration,
+    sleep_duration: Duration,
     task_cancelled: bool,
 ) {
     use crate::tenant::upload_queue::NotInitialized;
@@ -390,13 +395,9 @@ async fn gc_loop(tenant: Arc<Tenant>, cancel: CancellationToken) {
                     return;
                 }
                 Err(e) => {
-                    let wait_duration = backoff::exponential_backoff_duration_seconds(
-                        error_run + 1,
-                        1.0,
-                        MAX_BACKOFF_SECS,
-                    );
                     error_run += 1;
-                    let wait_duration = Duration::from_secs_f64(wait_duration);
+                    let wait_duration =
+                        exponential_backoff_duration(error_run, 1.0, MAX_BACKOFF_SECS);
 
                     if matches!(e, crate::tenant::GcError::TimelineCancelled) {
                         // Timeline was cancelled during gc. We might either be in an event
