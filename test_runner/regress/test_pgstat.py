@@ -79,5 +79,5 @@ def test_pgstat(neon_simple_env: NeonEnv):
         "select seq_scan,seq_tup_read,n_tup_ins,n_tup_upd,n_live_tup,n_dead_tup, vacuum_count,analyze_count from pg_stat_user_tables"
     )
     rec = cur.fetchall()[0]
-    # pgstat information is not restored because it's size exeeds 100k threshold
+    # pgstat information is not restored because its size exeeds 100k threshold
     assert rec == (0, 0, 0, 0, 0, 0, 0, 0)
