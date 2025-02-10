@@ -31,10 +31,10 @@
 //!         .init();
 //! }
 //! ```
-#![deny(unsafe_code)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod http;
+pub mod perf_span;
 
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::KeyValue;
