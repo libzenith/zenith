@@ -1707,6 +1707,50 @@ RUN set -ex; \
 
 #########################################################################################
 #
+# Layer "cgroup-tools"
+#
+#########################################################################################
+
+# Build cgroup-tools
+#
+# At time of writing (2023-03-14), debian bullseye has a version of cgroup-tools (technically
+# libcgroup) that doesn't support cgroup v2 (version 0.41-11). Unfortunately, the vm-monitor
+# requires cgroup v2, so we'll build cgroup-tools ourselves.
+#
+# At time of migration to bookworm (2024-10-09), debian has a version of libcgroup/cgroup-tools 2.0.2,
+# and it _probably_ can be used as-is. However, we'll build it ourselves to minimise the changeset
+# for debian version migration.
+#
+FROM debian:bookworm-slim as cgroup-tools
+ENV LIBCGROUP_VERSION=v2.0.3
+
+RUN set -exu \
+    && apt update \
+    && apt install --no-install-recommends -y \
+        git \
+        ca-certificates \
+        automake \
+        cmake \
+        make \
+        gcc \
+        byacc \
+        flex \
+        libtool \
+        libpam0g-dev \
+    && git clone --depth 1 -b $LIBCGROUP_VERSION https://github.com/libcgroup/libcgroup \
+    && INSTALL_DIR="/libcgroup-install" \
+    && mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/include" \
+    && cd libcgroup \
+    # extracted from bootstrap.sh, with modified flags:
+    && (test -d m4 || mkdir m4) \
+    && autoreconf -fi \
+    && rm -rf autom4te.cache \
+    && CFLAGS="-O3" ./configure --prefix="$INSTALL_DIR" --sysconfdir=/etc --localstatedir=/var --enable-opaque-hierarchy="name=systemd" \
+    # actually build the thing...
+    && make install
+
+#########################################################################################
+#
 # Clean up postgres folder before inclusion
 #
 #########################################################################################
@@ -1878,6 +1922,13 @@ RUN mkdir /var/db && useradd -m -d /var/db/postgres postgres && \
 
 # aws cli is used by fast_import
 COPY --from=awscli /usr/local/aws-cli /usr/local/aws-cli
+
+# locally built cgroup-tools
+COPY --from=cgroup-tools /libcgroup-install/bin/*  /usr/local/bin/
+COPY --from=cgroup-tools /libcgroup-install/lib/*  /usr/local/lib/
+COPY --from=cgroup-tools /libcgroup-install/sbin/* /usr/local/sbin/
+
+COPY --chmod=0644 compute/etc/cgconfig.conf /etc/cgconfig.conf
 
 # pgbouncer and its config
 COPY --from=pgbouncer         /usr/local/pgbouncer/bin/pgbouncer /usr/local/bin/pgbouncer

@@ -10,6 +10,7 @@ User=postgres
 EnvironmentFile=/neonvm/runtime/command.env
 ExecStart=/usr/local/bin/compute_ctl $COMPUTE_CTL_ARGS
 Restart=on-failure
+Delegate=yes
 
 [Install]
 WantedBy=multi-user.target
