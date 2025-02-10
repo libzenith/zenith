@@ -27,8 +27,8 @@ use pageserver_api::key::{
     dbdir_key_range, rel_block_to_key, rel_dir_to_key, rel_key_range, rel_size_to_key,
     rel_tag_sparse_key_range, relmap_file_key, repl_origin_key, repl_origin_key_range,
     slru_block_to_key, slru_dir_to_key, slru_segment_key_range, slru_segment_size_to_key,
-    twophase_file_key, twophase_key_range, CompactKey, AUX_FILES_KEY, CHECKPOINT_KEY,
-    CONTROLFILE_KEY, DBDIR_KEY, REL_EXISTS_MARKER, SPARSE_TOMBSTONE_MARKER, TWOPHASEDIR_KEY,
+    twophase_file_key, twophase_key_range, CompactKey, RelDirExists, AUX_FILES_KEY, CHECKPOINT_KEY,
+    CONTROLFILE_KEY, DBDIR_KEY, TWOPHASEDIR_KEY,
 };
 use pageserver_api::key::{rel_tag_sparse_key, Key};
 use pageserver_api::keyspace::SparseKeySpace;
@@ -499,8 +499,11 @@ impl Timeline {
         if self.get_rel_size_v2_enabled() {
             // fetch directory listing (new)
             let key = rel_tag_sparse_key(tag.spcnode, tag.dbnode, tag.relnode, tag.forknum);
-            let buf = version.sparse_get(self, key, ctx).await?;
-            let exists_v2 = buf.is_some();
+            let buf = RelDirExists::decode_option(version.sparse_get(self, key, ctx).await?)
+                .ok_or_else(|| {
+                    PageReconstructError::Other(anyhow::anyhow!("invalid reldir key"))
+                })?;
+            let exists_v2 = buf == RelDirExists::Exists;
             // Fast path: if the relation exists in the new format, return true.
             // TODO: we should have a verification mode that checks both keyspaces
             // to ensure the relation only exists in one of them.
@@ -515,14 +518,6 @@ impl Timeline {
         let dir = RelDirectory::des(&buf)?;
         let exists_v1 = dir.rels.contains(&(tag.relnode, tag.forknum));
         Ok(exists_v1)
-    }
-
-    fn map_sparse_value(value: Bytes) -> Option<Bytes> {
-        if value.is_empty() {
-            None
-        } else {
-            Some(value)
-        }
     }
 
     /// Get a list of all existing relations in given tablespace and database.
@@ -575,8 +570,10 @@ impl Timeline {
             .await?;
         let mut rels = rels_v1;
         for (key, val) in results {
-            let val = Self::map_sparse_value(val?);
-            if val.is_none() {
+            let val = RelDirExists::decode(&val?).ok_or(PageReconstructError::Other(
+                anyhow::anyhow!("invalid reldir key"),
+            ))?;
+            if val == RelDirExists::Removed {
                 continue;
             }
             assert_eq!(key.field6, 1);
@@ -1909,15 +1906,16 @@ impl DatadirModification<'_> {
         if self.tline.get_rel_size_v2_enabled() {
             let rel_dir_key = rel_tag_sparse_key(rel.spcnode, rel.dbnode, rel.relnode, rel.forknum);
             // check if the rel_dir_key exists in v2
-            if self
+            let val = self
                 .sparse_get(rel_dir_key, ctx)
                 .await
-                .map_err(|e| RelationError::Other(e.into()))?
-                .is_some()
-            {
+                .map_err(|e| RelationError::Other(e.into()))?;
+            let val = RelDirExists::decode_option(val)
+                .ok_or_else(|| RelationError::Other(anyhow::anyhow!("invalid reldir key")))?;
+            if val == RelDirExists::Exists {
                 return Err(RelationError::AlreadyExists);
             }
-            self.put(rel_dir_key, Value::Image(REL_EXISTS_MARKER.clone()));
+            self.put(rel_dir_key, Value::Image(RelDirExists::Exists.encode()));
             // We don't write `rel_dir.rels` back to the storage in the v2 path unless it's the initial creation.
         }
 
@@ -2050,11 +2048,15 @@ impl DatadirModification<'_> {
                     // logic).
                     let key =
                         rel_tag_sparse_key(spc_node, db_node, rel_tag.relnode, rel_tag.forknum);
-                    if self.sparse_get(key, ctx).await?.is_some() {
+                    let val = RelDirExists::decode_option(self.sparse_get(key, ctx).await?)
+                        .ok_or_else(|| {
+                            RelationError::Other(anyhow::anyhow!("invalid reldir key"))
+                        })?;
+                    if val == RelDirExists::Exists {
                         self.pending_directory_entries
                             .push((DirectoryKind::RelV2, MetricsUpdate::Sub(1)));
                         // put tombstone
-                        self.put(key, Value::Image(SPARSE_TOMBSTONE_MARKER.clone()));
+                        self.put(key, Value::Image(RelDirExists::Removed.encode()));
                         // no need to set dirty to true
                         true
                     } else {

@@ -57,6 +57,41 @@ pub const DB_DIR_KEY_PREFIX: u8 = 0x64;
 /// The key prefix of rel directory keys.
 pub const REL_DIR_KEY_PREFIX: u8 = 0x65;
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum RelDirExists {
+    Exists,
+    Removed,
+}
+
+impl RelDirExists {
+    pub fn encode(&self) -> Bytes {
+        match self {
+            Self::Exists => REL_EXISTS_MARKER.clone(),
+            Self::Removed => SPARSE_TOMBSTONE_MARKER.clone(),
+        }
+    }
+
+    pub fn decode_option(data: Option<impl AsRef<[u8]>>) -> Option<Self> {
+        match data {
+            Some(marker) if marker.as_ref() == REL_EXISTS_MARKER => Some(Self::Exists),
+            // Any other marker is invalid
+            Some(_) => None,
+            None => Some(Self::Removed),
+        }
+    }
+
+    pub fn decode(data: impl AsRef<[u8]>) -> Option<Self> {
+        let data = data.as_ref();
+        if data == REL_EXISTS_MARKER {
+            Some(Self::Exists)
+        } else if data == SPARSE_TOMBSTONE_MARKER {
+            Some(Self::Removed)
+        } else {
+            None
+        }
+    }
+}
+
 /// The value of the rel directory keys that indicates the existence of a relation.
 pub const REL_EXISTS_MARKER: Bytes = Bytes::from_static(b"r");
 
