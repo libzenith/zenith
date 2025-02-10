@@ -2092,6 +2092,10 @@ impl DatadirModification<'_> {
                 self.tline.aux_file_size_estimator.on_add(content.len());
                 new_files.push((path, content));
             }
+            // Compute may request delete of old version of pgstat AUX file if new one exceeds size limit.
+            // Compute doesn't know if previous version of this file exists or not, so
+            // attempt to delete non-existing file can cause this message.
+            // To avoid false alarms, log it as info rather than warning.
             (None, true) => info!("removing non-existing aux file: {}", path),
         }
         let new_val = aux_file::encode_file_value(&new_files)?;
