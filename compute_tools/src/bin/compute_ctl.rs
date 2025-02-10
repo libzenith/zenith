@@ -47,9 +47,9 @@ use std::{thread, time::Duration};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Parser;
-use compute_tools::disk_quota::set_disk_quota;
 use compute_tools::http::server::Server;
 use compute_tools::lsn_lease::launch_lsn_lease_bg_task_for_static;
+use compute_tools::neonvmd_client::{resize_swap, set_disk_quota};
 use signal_hook::consts::{SIGQUIT, SIGTERM};
 use signal_hook::{consts::SIGINT, iterator::Signals};
 use tracing::{error, info, warn};
@@ -67,7 +67,6 @@ use compute_tools::logger::*;
 use compute_tools::monitor::launch_monitor;
 use compute_tools::params::*;
 use compute_tools::spec::*;
-use compute_tools::swap::resize_swap;
 use rlimit::{setrlimit, Resource};
 use utils::failpoint_support;
 
@@ -147,6 +146,7 @@ struct Cli {
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub resize_swap_on_bind: bool,
 
+    /// This is no longer used for anything. It's kept for now just for backwards-compatibility.
     #[arg(long)]
     pub set_disk_quota_for_fs: Option<String>,
 
@@ -468,10 +468,8 @@ fn start_postgres(
     }
 
     // Set disk quota if the compute spec says so
-    if let (Some(disk_quota_bytes), Some(disk_quota_fs_mountpoint)) =
-        (disk_quota_bytes, cli.set_disk_quota_for_fs.as_ref())
-    {
-        match set_disk_quota(disk_quota_bytes, disk_quota_fs_mountpoint) {
+    if let Some(disk_quota_bytes) = disk_quota_bytes {
+        match set_disk_quota(disk_quota_bytes) {
             Ok(()) => {
                 let size_mib = disk_quota_bytes as f32 / (1 << 20) as f32; // just for more coherent display.
                 info!(%disk_quota_bytes, %size_mib, "set disk quota");

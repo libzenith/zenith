@@ -231,7 +231,10 @@ pub(crate) async fn main() -> anyhow::Result<()> {
         .args(["-c", "fsync=off"])
         .args(["-c", "full_page_writes=off"])
         .args(["-c", "synchronous_commit=off"])
-        .args(["-c", &format!("maintenance_work_mem={maintenance_work_mem}MB")])
+        .args([
+            "-c",
+            &format!("maintenance_work_mem={maintenance_work_mem}MB"),
+        ])
         .args(["-c", &format!("max_parallel_maintenance_workers={nproc}")])
         .args(["-c", &format!("max_parallel_workers={nproc}")])
         .args(["-c", &format!("max_parallel_workers_per_gather={nproc}")])
