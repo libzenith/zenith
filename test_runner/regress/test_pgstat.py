@@ -13,7 +13,7 @@ def test_pgstat(neon_simple_env: NeonEnv):
 
     n = 10000
     endpoint = env.endpoints.create_start(
-        "main", config_lines=["neon_pgstat_file_size_limit=100kB", "autovacuum=off"])
+        "main", config_lines=["neon_pgstat_file_size_limit=100kB", "autovacuum=off"]
     )
 
     con = endpoint.connect()
