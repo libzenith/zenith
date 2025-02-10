@@ -1945,7 +1945,8 @@ RUN systemctl enable \
     pgbouncer \
     postgres_exporter sql_exporter sql_exporter-autoscaling \
     local_proxy \
-    compute_ctl
+    compute_ctl \
+    chown-pgdata
 
 ENTRYPOINT ["/sbin/init"]
 
