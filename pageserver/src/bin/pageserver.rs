@@ -210,7 +210,7 @@ fn main() -> anyhow::Result<()> {
     tracing::info!("Initializing page_cache...");
     page_cache::init(conf.page_cache_size);
 
-    start_pageserver(launch_ts, conf).context("Failed to start pageserver")?;
+    start_pageserver(launch_ts, conf, otel_guard).context("Failed to start pageserver")?;
 
     scenario.teardown();
     Ok(())
@@ -304,6 +304,7 @@ fn startup_checkpoint(started_at: Instant, phase: &str, human_phase: &str) {
 fn start_pageserver(
     launch_ts: &'static LaunchTimestamp,
     conf: &'static PageServerConf,
+    otel_guard: Option<OtelGuard>,
 ) -> anyhow::Result<()> {
     // Monotonic time for later calculating startup duration
     let started_startup_at = Instant::now();
@@ -646,13 +647,21 @@ fn start_pageserver(
 
     // Spawn a task to listen for libpq connections. It will spawn further tasks
     // for each connection. We created the listener earlier already.
-    let page_service = page_service::spawn(conf, tenant_manager.clone(), pg_auth, {
-        let _entered = COMPUTE_REQUEST_RUNTIME.enter(); // TcpListener::from_std requires it
-        pageserver_listener
-            .set_nonblocking(true)
-            .context("set listener to nonblocking")?;
-        tokio::net::TcpListener::from_std(pageserver_listener).context("create tokio listener")?
-    });
+    let perf_trace_dispatch = otel_guard.as_ref().map(|g| g.dispatch.clone());
+    let page_service = page_service::spawn(
+        conf,
+        tenant_manager.clone(),
+        pg_auth,
+        perf_trace_dispatch,
+        {
+            let _entered = COMPUTE_REQUEST_RUNTIME.enter(); // TcpListener::from_std requires it
+            pageserver_listener
+                .set_nonblocking(true)
+                .context("set listener to nonblocking")?;
+            tokio::net::TcpListener::from_std(pageserver_listener)
+                .context("create tokio listener")?
+        },
+    );
 
     // All started up! Now just sit and wait for shutdown signal.
     BACKGROUND_RUNTIME.block_on(async move {

@@ -51,7 +51,7 @@ use utils::{
 use crate::auth::check_permission;
 use crate::basebackup::BasebackupError;
 use crate::config::PageServerConf;
-use crate::context::{DownloadBehavior, RequestContext};
+use crate::context::{DownloadBehavior, RequestContext, RequestContextBuilder};
 use crate::metrics::{self, SmgrOpTimer};
 use crate::metrics::{ComputeCommandKind, COMPUTE_COMMANDS_COUNTERS, LIVE_CONNECTIONS};
 use crate::pgdatadir_mapping::Version;
@@ -99,6 +99,7 @@ pub fn spawn(
     conf: &'static PageServerConf,
     tenant_manager: Arc<TenantManager>,
     pg_auth: Option<Arc<SwappableJwtAuth>>,
+    perf_trace_dispatch: Option<Dispatch>,
     tcp_listener: tokio::net::TcpListener,
 ) -> Listener {
     let cancel = CancellationToken::new();
@@ -116,6 +117,7 @@ pub fn spawn(
             conf,
             tenant_manager,
             pg_auth,
+            perf_trace_dispatch,
             tcp_listener,
             conf.pg_auth_type,
             conf.page_service_pipelining.clone(),
@@ -172,6 +174,7 @@ pub async fn libpq_listener_main(
     conf: &'static PageServerConf,
     tenant_manager: Arc<TenantManager>,
     auth: Option<Arc<SwappableJwtAuth>>,
+    perf_trace_dispatch: Option<Dispatch>,
     listener: tokio::net::TcpListener,
     auth_type: AuthType,
     pipelining_config: PageServicePipeliningConfig,
@@ -204,8 +207,12 @@ pub async fn libpq_listener_main(
                 // Connection established. Spawn a new task to handle it.
                 debug!("accepted connection from {}", peer_addr);
                 let local_auth = auth.clone();
-                let connection_ctx = listener_ctx
-                    .detached_child(TaskKind::PageRequestHandler, DownloadBehavior::Download);
+                let connection_ctx = RequestContextBuilder::from(&listener_ctx)
+                    .task_kind(TaskKind::PageRequestHandler)
+                    .download_behavior(DownloadBehavior::Download)
+                    .perf_span_dispatch(perf_trace_dispatch.clone())
+                    .detached_child();
+
                 connection_handler_tasks.spawn(page_service_conn_main(
                     conf,
                     tenant_manager.clone(),
