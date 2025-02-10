@@ -492,30 +492,29 @@ impl Timeline {
             return Ok(false);
         }
 
-        // Read path: first read the old reldir key, and then
-        // merge the result with the new sparse keyspace.
+        // Read path: first read the new reldir keyspace, and then
+        // merge the result with the old reldir key.
         // TODO: if IndexPart::rel_size_migration is `Migrated`, we only need to read from v2.
-
-        // fetch directory listing (old)
-        let key = rel_dir_to_key(tag.spcnode, tag.dbnode);
-        let buf = version.get(self, key, ctx).await?;
-
-        let dir = RelDirectory::des(&buf)?;
-        let exists_v1 = dir.rels.contains(&(tag.relnode, tag.forknum));
 
         if self.get_rel_size_v2_enabled() {
             // fetch directory listing (new)
             let key = rel_tag_sparse_key(tag.spcnode, tag.dbnode, tag.relnode, tag.forknum);
             let buf = version.sparse_get(self, key, ctx).await?;
             let exists_v2 = buf.is_some();
-            debug_assert!(
-                !(exists_v1 && exists_v2),
-                "a rel exists in both v1 and v2, which indicates a bug"
-            );
-            Ok(exists_v1 || exists_v2)
-        } else {
-            Ok(exists_v1)
+            // Fast path: if the relation exists in the new format, return true.
+            // TODO: we should have a verification mode that checks both keyspaces
+            // to ensure the relation only exists in one of them.
+            return Ok(exists_v2);
         }
+
+        // fetch directory listing (old)
+
+        let key = rel_dir_to_key(tag.spcnode, tag.dbnode);
+        let buf = version.get(self, key, ctx).await?;
+
+        let dir = RelDirectory::des(&buf)?;
+        let exists_v1 = dir.rels.contains(&(tag.relnode, tag.forknum));
+        Ok(exists_v1)
     }
 
     fn map_sparse_value(value: Bytes) -> Option<Bytes> {
@@ -554,44 +553,44 @@ impl Timeline {
                 forknum: *forknum,
             }));
 
-        if self.get_rel_size_v2_enabled() {
-            // scan directory listing (new), merge with the old results
-            let key_range = rel_tag_sparse_key_range(spcnode, dbnode);
-            let io_concurrency = IoConcurrency::spawn_from_conf(
-                self.conf,
-                self.gate
-                    .enter()
-                    .map_err(|_| PageReconstructError::Cancelled)?,
-            );
-            let results = self
-                .scan(
-                    KeySpace::single(key_range),
-                    version.get_lsn(),
-                    ctx,
-                    io_concurrency,
-                )
-                .await?;
-            let mut rels = rels_v1;
-            for (key, val) in results {
-                let val = Self::map_sparse_value(val?);
-                if val.is_none() {
-                    continue;
-                }
-                assert_eq!(key.field6, 1);
-                assert_eq!(key.field2, spcnode);
-                assert_eq!(key.field3, dbnode);
-                let did_not_contain = rels.insert(RelTag {
-                    spcnode,
-                    dbnode,
-                    relnode: key.field4,
-                    forknum: key.field5,
-                });
-                debug_assert!(did_not_contain, "duplicate reltag in v2");
-            }
-            Ok(rels)
-        } else {
-            Ok(rels_v1)
+        if !self.get_rel_size_v2_enabled() {
+            return Ok(rels_v1);
         }
+
+        // scan directory listing (new), merge with the old results
+        let key_range = rel_tag_sparse_key_range(spcnode, dbnode);
+        let io_concurrency = IoConcurrency::spawn_from_conf(
+            self.conf,
+            self.gate
+                .enter()
+                .map_err(|_| PageReconstructError::Cancelled)?,
+        );
+        let results = self
+            .scan(
+                KeySpace::single(key_range),
+                version.get_lsn(),
+                ctx,
+                io_concurrency,
+            )
+            .await?;
+        let mut rels = rels_v1;
+        for (key, val) in results {
+            let val = Self::map_sparse_value(val?);
+            if val.is_none() {
+                continue;
+            }
+            assert_eq!(key.field6, 1);
+            assert_eq!(key.field2, spcnode);
+            assert_eq!(key.field3, dbnode);
+            let did_not_contain = rels.insert(RelTag {
+                spcnode,
+                dbnode,
+                relnode: key.field4,
+                forknum: key.field5,
+            });
+            debug_assert!(did_not_contain, "duplicate reltag in v2");
+        }
+        Ok(rels)
     }
 
     /// Get the whole SLRU segment
