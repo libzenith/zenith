@@ -30,7 +30,7 @@ def test_local_corruption(neon_env_builder: NeonEnvBuilder):
             ".*load failed.*load local timeline.*",
             ".*: layer load failed, assuming permanent failure:.*",
             ".*failed to get checkpoint bytes.*",
-            ".*failed get control bytes.*",
+            ".*failed to get control bytes.*",
         ]
     )
 
