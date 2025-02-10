@@ -343,6 +343,28 @@ class PageserverWalReceiverProtocol(StrEnum):
             raise ValueError(f"Unknown protocol type: {proto}")
 
 
+@dataclass
+class PageserverTracingConfig:
+    sampling_ratio: tuple[int, int]
+    endpoint: str
+    protocol: str
+    timeout: str
+
+    def to_config_key_value(self) -> tuple[str, dict[str, Any]]:
+        value = {
+            "sampling-ratio": {
+                "numerator": self.sampling_ratio[0],
+                "denominator": self.sampling_ratio[1],
+            },
+            "export-config": {
+                "endpoint": self.endpoint,
+                "protocol": self.protocol,
+                "timeout": self.timeout,
+            },
+        }
+        return ("tracing", value)
+
+
 class NeonEnvBuilder:
     """
     Builder object to create a Neon runtime environment
@@ -392,6 +414,7 @@ class NeonEnvBuilder:
         pageserver_virtual_file_io_mode: str | None = None,
         pageserver_wal_receiver_protocol: PageserverWalReceiverProtocol | None = None,
         pageserver_get_vectored_concurrent_io: str | None = None,
+        pageserver_tracing_config: PageserverTracingConfig | None = None,
     ):
         self.repo_dir = repo_dir
         self.rust_log_override = rust_log_override
@@ -434,6 +457,8 @@ class NeonEnvBuilder:
         self.pageserver_get_vectored_concurrent_io: str | None = (
             pageserver_get_vectored_concurrent_io
         )
+
+        self.pageserver_tracing_config = pageserver_tracing_config
 
         self.pageserver_default_tenant_config_compaction_algorithm: dict[str, Any] | None = (
             pageserver_default_tenant_config_compaction_algorithm
@@ -1073,6 +1098,7 @@ class NeonEnv:
         self.pageserver_virtual_file_io_mode = config.pageserver_virtual_file_io_mode
         self.pageserver_wal_receiver_protocol = config.pageserver_wal_receiver_protocol
         self.pageserver_get_vectored_concurrent_io = config.pageserver_get_vectored_concurrent_io
+        self.pageserver_tracing_config = config.pageserver_tracing_config
 
         # Create the neon_local's `NeonLocalInitConf`
         cfg: dict[str, Any] = {
@@ -1178,6 +1204,14 @@ class NeonEnv:
                 )
                 if key not in ps_cfg:
                     ps_cfg[key] = value
+
+            if self.pageserver_tracing_config is not None:
+                key, value = self.pageserver_tracing_config.to_config_key_value()
+
+                if key not in ps_cfg:
+                    ps_cfg[key] = value
+
+                ps_cfg[key] = value
 
             # Create a corresponding NeonPageserver object
             self.pageservers.append(

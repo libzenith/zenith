@@ -201,6 +201,8 @@ pub struct PageServerConf {
     /// Enable read path debugging. If enabled, read key errors will print a backtrace of the layer
     /// files read.
     pub enable_read_path_debugging: bool,
+
+    pub tracing: Option<pageserver_api::config::Tracing>,
 }
 
 /// Token for authentication to safekeepers
@@ -365,6 +367,7 @@ impl PageServerConf {
             page_service_pipelining,
             get_vectored_concurrent_io,
             enable_read_path_debugging,
+            tracing,
         } = config_toml;
 
         let mut conf = PageServerConf {
@@ -411,6 +414,7 @@ impl PageServerConf {
             wal_receiver_protocol,
             page_service_pipelining,
             get_vectored_concurrent_io,
+            tracing,
 
             // ------------------------------------------------------------
             // fields that require additional validation or custom handling
@@ -466,6 +470,17 @@ impl PageServerConf {
                 auth_validation_public_key_path.exists(),
                 format!(
                     "Can't find auth_validation_public_key at '{auth_validation_public_key_path}'",
+                )
+            );
+        }
+
+        if let Some(tracing_config) = conf.tracing.as_ref() {
+            let ratio = &tracing_config.sampling_ratio;
+            ensure!(
+                ratio.denominator != 0 && ratio.denominator >= ratio.numerator,
+                format!(
+                    "Invalid sampling ratio: {}/{}",
+                    ratio.numerator, ratio.denominator
                 )
             );
         }

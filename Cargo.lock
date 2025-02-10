@@ -4201,6 +4201,7 @@ dependencies = [
  "strum",
  "strum_macros",
  "thiserror 1.0.69",
+ "tracing-utils",
  "utils",
 ]
 
