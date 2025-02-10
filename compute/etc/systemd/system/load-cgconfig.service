@@ -1,0 +1,10 @@
+[Unit]
+Description=Create neonvm-postgres cgroup
+
+[Service]
+Type=oneshot
+ExecStart=cgconfigparser -l /etc/cgconfig.conf
+RemainAfterExit=yes
+
+[Install]
+WantedBy=compute_ctl.service
