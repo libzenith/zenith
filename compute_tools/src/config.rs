@@ -2,8 +2,11 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::prelude::*;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use anyhow::Result;
+use tracing::info;
+
 
 use crate::pg_helpers::escape_conf_value;
 use crate::pg_helpers::{GenericOptionExt, PgOptionsSerialize};
@@ -156,4 +159,53 @@ where
     file.set_len(0)?;
 
     res
+}
+
+pub fn configure_rsyslog(log_directory: &str, tag: &str, remote_ip: &str, remote_port: &str) -> Result<()> {
+    let config_content = format!(
+        r#"
+# Load imfile module to read log files
+module(load="imfile")
+
+# Input configuration for log files in the specified directory
+input(type="imfile" File="{}/*.log" Tag="{}" Severity="info" Facility="local0")
+
+# Forward logs to remote syslog server
+*.* @@{}:{}
+"#,
+        log_directory, tag, remote_ip, remote_port
+    );
+
+    // TODO fix permissions
+    let rsyslog_conf_path = "/etc/rsyslog.d/compute_ctl.conf";
+
+    // Open or create the configuration file for appending
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .write(true)
+        .open(rsyslog_conf_path)?;
+
+    // Write the configuration content to the file
+    file.write_all(config_content.as_bytes())?;
+
+    info!("rsyslog configuration added successfully!");
+
+    // restart rsyslogd
+    // TODO check privileges
+    match Command::new("systemctl")
+        .arg("restart")
+        .arg("rsyslog")
+        .stdout(Stdio::null()).spawn() {
+        Ok(mut child) => {
+            if let Ok(r) = child.wait() {
+                if r.success() {
+                    info!("rsyslogd restarted successfully");
+                }
+            }
+        }
+        Err(e) => return Err(e.into())
+    }
+
+    Ok(())
 }

@@ -36,6 +36,7 @@ use nix::sys::signal::{kill, Signal};
 use remote_storage::{DownloadError, RemotePath};
 use tokio::spawn;
 
+use crate::config::configure_rsyslog;
 use crate::installed_extensions::get_installed_extensions;
 use crate::local_proxy;
 use crate::pg_helpers::*;
@@ -1563,6 +1564,14 @@ impl ComputeNode {
                         )? {
                             info!("updated postgresql.conf to set pgaudit.log='write, ddl, function, role'");
                         }
+
+
+                        info!("configuring rsyslog for HIPAA compliance");
+                        let log_directory_path = pgdata_path.join("log");
+                        // TODO pass as parameters from cplane (?)
+                        let remote_ip = "192.168.1.100";
+                        let remote_port = "514";
+                        configure_rsyslog(log_directory_path.to_str().unwrap(), "hipaa", remote_ip, remote_port)?
                     }
                     ComputeAuditLogLevel::Off => {}
                 }

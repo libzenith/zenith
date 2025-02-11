@@ -1892,9 +1892,18 @@ RUN apt update && \
         ca-certificates \
         curl \
         unzip \
+        rsyslog \
         $VERSION_INSTALLS && \
     apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
+
+# rsyslog config permissions
+RUN chown postgres:postgres /etc/rsyslog.conf && \
+    chown -R postgres:postgres /etc/rsyslog.d && \
+    # TODO: Is there a better way to grant this permission so that compute_ctl could run without sudo?
+    # Add the user to the sudoers file with permission to run systemctl restart rsyslog without a password
+    echo "postgres ALL=(ALL) NOPASSWD: /bin/systemctl restart rsyslog" >> /etc/sudoers
+
 
 # aws cli is used by fast_import (curl and unzip above are at this time only used for this installation step)
 ARG TARGETARCH
