@@ -929,6 +929,7 @@ pub(crate) mod test_utils {
                         NodeId(i),
                         format!("httphost-{i}"),
                         80 + i as u16,
+                        false,
                         format!("pghost-{i}"),
                         5432 + i as u16,
                         az_iter
