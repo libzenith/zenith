@@ -50,9 +50,19 @@ def test_pageserver_reldir_v2(
 
     # Restart the endpoint
     endpoint.stop()
+    # This will acquire a basebackup, which lists all relations.
     endpoint.start()
 
     # Check if both relations are still accessible
     endpoint.safe_psql("DROP TABLE IF EXISTS foo1")
     endpoint.safe_psql("SELECT * FROM foo2")
     endpoint.safe_psql("SELECT * FROM foo3")
+
+    endpoint.safe_psql("DROP TABLE foo3")
+    endpoint.stop()
+    endpoint.start()
+
+    # Check if relations are still accessible
+    endpoint.safe_psql("DROP TABLE IF EXISTS foo1")
+    endpoint.safe_psql("SELECT * FROM foo2")
+    endpoint.safe_psql("DROP TABLE IF EXISTS foo3")

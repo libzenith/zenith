@@ -492,17 +492,15 @@ impl Timeline {
             return Ok(false);
         }
 
-        // Read path: first read the new reldir keyspace, and then
-        // merge the result with the old reldir key.
+        // Read path: first read the new reldir keyspace. Early return if the relation exists.
+        // Otherwise, read the old reldir keyspace.
         // TODO: if IndexPart::rel_size_migration is `Migrated`, we only need to read from v2.
 
         if self.get_rel_size_v2_enabled() {
             // fetch directory listing (new)
             let key = rel_tag_sparse_key(tag.spcnode, tag.dbnode, tag.relnode, tag.forknum);
             let buf = RelDirExists::decode_option(version.sparse_get(self, key, ctx).await?)
-                .ok_or_else(|| {
-                    PageReconstructError::Other(anyhow::anyhow!("invalid reldir key"))
-                })?;
+                .map_err(|_| PageReconstructError::Other(anyhow::anyhow!("invalid reldir key")))?;
             let exists_v2 = buf == RelDirExists::Exists;
             // Fast path: if the relation exists in the new format, return true.
             // TODO: we should have a verification mode that checks both keyspaces
@@ -572,9 +570,8 @@ impl Timeline {
             .await?;
         let mut rels = rels_v1;
         for (key, val) in results {
-            let val = RelDirExists::decode(&val?).ok_or(PageReconstructError::Other(
-                anyhow::anyhow!("invalid reldir key"),
-            ))?;
+            let val = RelDirExists::decode(&val?)
+                .map_err(|_| PageReconstructError::Other(anyhow::anyhow!("invalid reldir key")))?;
             if val == RelDirExists::Removed {
                 continue;
             }
@@ -1913,34 +1910,17 @@ impl DatadirModification<'_> {
                 .await
                 .map_err(|e| RelationError::Other(e.into()))?;
             let val = RelDirExists::decode_option(val)
-                .ok_or_else(|| RelationError::Other(anyhow::anyhow!("invalid reldir key")))?;
+                .map_err(|_| RelationError::Other(anyhow::anyhow!("invalid reldir key")))?;
             if val == RelDirExists::Exists {
                 return Err(RelationError::AlreadyExists);
             }
             self.put(rel_dir_key, Value::Image(RelDirExists::Exists.encode()));
-            // We don't write `rel_dir.rels` back to the storage in the v2 path unless it's the initial creation.
-        }
-
-        if !dbdir_exists {
-            self.pending_directory_entries
-                .push((DirectoryKind::Rel, MetricsUpdate::Set(0)));
-            if self.tline.get_rel_size_v2_enabled() {
+            if !dbdir_exists {
+                self.pending_directory_entries
+                    .push((DirectoryKind::Rel, MetricsUpdate::Set(0)));
                 self.pending_directory_entries
                     .push((DirectoryKind::RelV2, MetricsUpdate::Set(0)));
-            }
-        }
-
-        if !self.tline.get_rel_size_v2_enabled() {
-            self.pending_directory_entries
-                .push((DirectoryKind::Rel, MetricsUpdate::Add(1)));
-            self.put(
-                rel_dir_key,
-                Value::Image(Bytes::from(
-                    RelDirectory::ser(&rel_dir).context("serialize")?,
-                )),
-            );
-        } else {
-            if !dbdir_exists {
+                // We don't write `rel_dir_key -> rel_dir.rels` back to the storage in the v2 path unless it's the initial creation.
                 // TODO: if we have fully migrated to v2, no need to create this directory. Otherwise, there
                 // will be key not found errors if we don't create an empty one for rel_size_v2.
                 self.put(
@@ -1952,8 +1932,20 @@ impl DatadirModification<'_> {
             }
             self.pending_directory_entries
                 .push((DirectoryKind::RelV2, MetricsUpdate::Add(1)));
+        } else {
+            if !dbdir_exists {
+                self.pending_directory_entries
+                    .push((DirectoryKind::Rel, MetricsUpdate::Set(0)))
+            }
+            self.pending_directory_entries
+                .push((DirectoryKind::Rel, MetricsUpdate::Add(1)));
+            self.put(
+                rel_dir_key,
+                Value::Image(Bytes::from(
+                    RelDirectory::ser(&rel_dir).context("serialize")?,
+                )),
+            );
         }
-
         // Put size
         let size_key = rel_size_to_key(rel);
         let buf = nblocks.to_le_bytes();
@@ -2051,9 +2043,7 @@ impl DatadirModification<'_> {
                     let key =
                         rel_tag_sparse_key(spc_node, db_node, rel_tag.relnode, rel_tag.forknum);
                     let val = RelDirExists::decode_option(self.sparse_get(key, ctx).await?)
-                        .ok_or_else(|| {
-                            RelationError::Other(anyhow::anyhow!("invalid reldir key"))
-                        })?;
+                        .map_err(|_| RelationError::Other(anyhow::anyhow!("invalid reldir key")))?;
                     if val == RelDirExists::Exists {
                         self.pending_directory_entries
                             .push((DirectoryKind::RelV2, MetricsUpdate::Sub(1)));

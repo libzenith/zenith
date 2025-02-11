@@ -63,37 +63,48 @@ pub enum RelDirExists {
     Removed,
 }
 
+#[derive(Debug)]
+pub struct DecodeError;
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid marker")
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
 impl RelDirExists {
+    /// The value of the rel directory keys that indicates the existence of a relation.
+    const REL_EXISTS_MARKER: Bytes = Bytes::from_static(b"r");
+
     pub fn encode(&self) -> Bytes {
         match self {
-            Self::Exists => REL_EXISTS_MARKER.clone(),
+            Self::Exists => Self::REL_EXISTS_MARKER.clone(),
             Self::Removed => SPARSE_TOMBSTONE_MARKER.clone(),
         }
     }
 
-    pub fn decode_option(data: Option<impl AsRef<[u8]>>) -> Option<Self> {
+    pub fn decode_option(data: Option<impl AsRef<[u8]>>) -> Result<Self, DecodeError> {
         match data {
-            Some(marker) if marker.as_ref() == REL_EXISTS_MARKER => Some(Self::Exists),
+            Some(marker) if marker.as_ref() == Self::REL_EXISTS_MARKER => Ok(Self::Exists),
             // Any other marker is invalid
-            Some(_) => None,
-            None => Some(Self::Removed),
+            Some(_) => Err(DecodeError),
+            None => Ok(Self::Removed),
         }
     }
 
-    pub fn decode(data: impl AsRef<[u8]>) -> Option<Self> {
+    pub fn decode(data: impl AsRef<[u8]>) -> Result<Self, DecodeError> {
         let data = data.as_ref();
-        if data == REL_EXISTS_MARKER {
-            Some(Self::Exists)
+        if data == Self::REL_EXISTS_MARKER {
+            Ok(Self::Exists)
         } else if data == SPARSE_TOMBSTONE_MARKER {
-            Some(Self::Removed)
+            Ok(Self::Removed)
         } else {
-            None
+            Err(DecodeError)
         }
     }
 }
-
-/// The value of the rel directory keys that indicates the existence of a relation.
-pub const REL_EXISTS_MARKER: Bytes = Bytes::from_static(b"r");
 
 /// A tombstone in the sparse keyspace, which is an empty buffer.
 pub const SPARSE_TOMBSTONE_MARKER: Bytes = Bytes::from_static(b"");
