@@ -9,8 +9,8 @@
 [submodule "vendor/postgres-v16"]
 	path = vendor/postgres-v16
 	url = https://github.com/neondatabase/postgres.git
-	branch = REL_16_STABLE_neon
+	branch = alexk/pg-16-7
 [submodule "vendor/postgres-v17"]
 	path = vendor/postgres-v17
 	url = https://github.com/neondatabase/postgres.git
-	branch = REL_17_STABLE_neon
+	branch = alexk/pg-17-3
