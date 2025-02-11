@@ -2299,10 +2299,8 @@ def test_membership_api(neon_env_builder: NeonEnvBuilder):
 
     # Switch request to lower conf should be ignored.
     lower_conf = Configuration(generation=3, members=[], new_members=None)
-    resp = http_cli.membership_switch(tenant_id, timeline_id, lower_conf)
-    log.info(f"lower switch resp: {resp}")
-    assert resp.previous_conf.generation == 5
-    assert resp.current_conf.generation == 5
+    with pytest.raises(requests.exceptions.HTTPError):
+        http_cli.membership_switch(tenant_id, timeline_id, lower_conf)
 
 
 # In this test we check for excessive START_REPLICATION and START_WAL_PUSH queries

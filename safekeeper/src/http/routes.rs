@@ -291,12 +291,21 @@ async fn timeline_membership_handler(
     let tli = global_timelines.get(ttid).map_err(ApiError::from)?;
 
     let data: models::TimelineMembershipSwitchRequest = json_request(&mut request).await?;
+    let req_gen = data.mconf.generation;
     let response = tli
         .membership_switch(data.mconf)
         .await
         .map_err(ApiError::InternalServerError)?;
 
-    json_response(StatusCode::OK, response)
+    // Return 409 if request was ignored.
+    if req_gen == response.current_conf.generation {
+        json_response(StatusCode::OK, response)
+    } else {
+        Err(ApiError::Conflict(format!(
+            "request to switch into {} ignored, current generation {}",
+            req_gen, response.current_conf.generation
+        )))
+    }
 }
 
 async fn timeline_copy_handler(mut request: Request<Body>) -> Result<Response<Body>, ApiError> {
