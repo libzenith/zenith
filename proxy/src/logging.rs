@@ -44,7 +44,8 @@ pub async fn init() -> anyhow::Result<LoggingGuard> {
                 .expect("this should be a valid filter directive"),
         );
 
-    let otlp_layer = tracing_utils::init_tracing("proxy").await;
+    let otlp_layer =
+        tracing_utils::init_tracing("proxy", tracing_utils::ExportConfig::default()).await;
 
     let json_log_layer = if logfmt == LogFormat::Json {
         Some(JsonLoggingLayer {
