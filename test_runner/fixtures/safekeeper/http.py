@@ -276,7 +276,7 @@ class SafekeeperHttpClient(requests.Session, MetricsGetter):
     def membership_switch(
         self, tenant_id: TenantId, timeline_id: TimelineId, to: Configuration
     ) -> TimelineMembershipSwitchResponse:
-        res = self.post(
+        res = self.put(
             f"http://localhost:{self.port}/v1/tenant/{tenant_id}/timeline/{timeline_id}/membership",
             data=to.to_json(),
         )

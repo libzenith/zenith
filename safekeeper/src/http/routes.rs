@@ -660,7 +660,7 @@ pub fn make_router(
             "/v1/tenant/:tenant_id/timeline/:timeline_id/snapshot/:destination_id",
             |r| request_span(r, timeline_snapshot_handler),
         )
-        .post(
+        .put(
             "/v1/tenant/:tenant_id/timeline/:timeline_id/membership",
             |r| request_span(r, timeline_membership_handler),
         )
