@@ -273,6 +273,18 @@ class SafekeeperHttpClient(requests.Session, MetricsGetter):
         assert isinstance(res_json, dict)
         return res_json
 
+    def timeline_exclude(
+        self, tenant_id: TenantId, timeline_id: TimelineId, to: Configuration
+    ) -> TimelineMembershipSwitchResponse:
+        res = self.put(
+            f"http://localhost:{self.port}/v1/tenant/{tenant_id}/timeline/{timeline_id}/exclude",
+            data=to.to_json(),
+        )
+        res.raise_for_status()
+        res_json = res.json()
+        assert isinstance(res_json, dict)
+        return res_json
+
     def membership_switch(
         self, tenant_id: TenantId, timeline_id: TimelineId, to: Configuration
     ) -> TimelineMembershipSwitchResponse:

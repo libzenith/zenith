@@ -566,11 +566,18 @@ impl Timeline {
         });
     }
 
-    /// Background timeline activities (which hold Timeline::gate) will no
-    /// longer run once this function completes.
-    pub async fn shutdown(&self) {
+    /// Cancel the timeline, requesting background activity to stop. Closing
+    /// the `self.gate` waits for that.
+    pub async fn cancel(&self) {
         info!("timeline {} shutting down", self.ttid);
         self.cancel.cancel();
+    }
+
+    /// Background timeline activities (which hold Timeline::gate) will no
+    /// longer run once this function completes. `Self::cancel` must have been
+    /// already called.
+    pub async fn close(&self) {
+        assert!(self.cancel.is_cancelled());
 
         // Wait for any concurrent tasks to stop using this timeline, to avoid e.g. attempts
         // to read deleted files.
@@ -582,13 +589,13 @@ impl Timeline {
     /// Also deletes WAL in s3. Might fail if e.g. s3 is unavailable, but
     /// deletion API endpoint is retriable.
     ///
-    /// Timeline must be in shut-down state (i.e. call [`Self::shutdown`] first)
+    /// Timeline must be in shut-down state (i.e. call [`Self::close`] first)
     pub async fn delete(
         &self,
         shared_state: &mut WriteGuardSharedState<'_>,
         only_local: bool,
     ) -> Result<bool> {
-        // Assert that [`Self::shutdown`] was already called
+        // Assert that [`Self::close`] was already called
         assert!(self.cancel.is_cancelled());
         assert!(self.gate.close_complete());
 

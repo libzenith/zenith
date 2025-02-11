@@ -3,6 +3,7 @@
 //! all from the disk on startup and keeping them in memory.
 
 use crate::defaults::DEFAULT_EVICTION_CONCURRENCY;
+use crate::http::routes::DeleteOrExcludeError;
 use crate::rate_limit::RateLimiter;
 use crate::state::TimelinePersistentState;
 use crate::timeline::{delete_dir, get_tenant_dir, get_timeline_dir, Timeline, TimelineError};
@@ -12,7 +13,7 @@ use crate::{control_file, wal_storage, SafeKeeperConf};
 use anyhow::{bail, Context, Result};
 use camino::Utf8PathBuf;
 use camino_tempfile::Utf8TempDir;
-use safekeeper_api::membership::Configuration;
+use safekeeper_api::membership::{self, Configuration};
 use safekeeper_api::models::SafekeeperUtilization;
 use safekeeper_api::ServerInfo;
 use serde::Serialize;
@@ -445,13 +446,13 @@ impl GlobalTimelines {
             .collect()
     }
 
-    /// Cancels timeline, then deletes the corresponding data directory.
-    /// If only_local, doesn't remove WAL segments in remote storage.
-    pub(crate) async fn delete(
+    /// Delete timeline, only locally on this node or globally (also cleaning
+    /// remote storage WAL), depending on `action` value.
+    pub(crate) async fn delete_or_exclude(
         &self,
         ttid: &TenantTimelineId,
-        only_local: bool,
-    ) -> Result<TimelineDeleteResult> {
+        action: DeleteOrExclude,
+    ) -> Result<TimelineDeleteResult, DeleteOrExcludeError> {
         let tli_res = {
             let state = self.state.lock().unwrap();
 
@@ -466,12 +467,35 @@ impl GlobalTimelines {
 
         let result = match tli_res {
             Ok(timeline) => {
-                info!("deleting timeline {}, only_local={}", ttid, only_local);
-                timeline.shutdown().await;
+                info!("deleting timeline {}, action={:?}", ttid, action);
+
+                // If node is getting excluded, check the generation first.
+                // Then, while holding the lock cancel the timeline; it will be
+                // unusable after this point, and if node is added back first
+                // deletion must be completed and node seeded anew.
+                //
+                // We would like to avoid holding the lock while waiting for the
+                // gate to finish as this is deadlock prone, so for actual
+                // deletion will take it second time.
+                if let DeleteOrExclude::Exclude(ref mconf) = action {
+                    let shared_state = timeline.read_shared_state().await;
+                    if shared_state.sk.state().mconf.generation > mconf.generation {
+                        return Err(DeleteOrExcludeError::Conflict {
+                            requested: mconf.clone(),
+                            current: shared_state.sk.state().mconf.clone(),
+                        });
+                    }
+                    timeline.cancel().await;
+                } else {
+                    timeline.cancel().await;
+                }
+
+                timeline.close().await;
 
                 // Take a lock and finish the deletion holding this mutex.
                 let mut shared_state = timeline.write_shared_state().await;
 
+                let only_local = !matches!(action, DeleteOrExclude::Delete);
                 let dir_existed = timeline.delete(&mut shared_state, only_local).await?;
 
                 Ok(TimelineDeleteResult { dir_existed })
@@ -502,7 +526,7 @@ impl GlobalTimelines {
     pub async fn delete_all_for_tenant(
         &self,
         tenant_id: &TenantId,
-        only_local: bool,
+        action: DeleteOrExclude,
     ) -> Result<HashMap<TenantTimelineId, TimelineDeleteResult>> {
         info!("deleting all timelines for tenant {}", tenant_id);
         let to_delete = self.get_all_for_tenant(*tenant_id);
@@ -511,7 +535,7 @@ impl GlobalTimelines {
 
         let mut deleted = HashMap::new();
         for tli in &to_delete {
-            match self.delete(&tli.ttid, only_local).await {
+            match self.delete_or_exclude(&tli.ttid, action.clone()).await {
                 Ok(result) => {
                     deleted.insert(tli.ttid, result);
                 }
@@ -525,7 +549,7 @@ impl GlobalTimelines {
 
         // If there was an error, return it.
         if let Some(e) = err {
-            return Err(e);
+            return Err(anyhow::Error::from(e));
         }
 
         // There may be broken timelines on disk, so delete the whole tenant dir as well.
@@ -554,6 +578,18 @@ impl GlobalTimelines {
 #[derive(Clone, Copy, Serialize)]
 pub struct TimelineDeleteResult {
     pub dir_existed: bool,
+}
+
+/// Action for delete_or_exclude.
+#[derive(Clone, Debug)]
+pub enum DeleteOrExclude {
+    /// Delete timeline globally.
+    Delete,
+    /// Legacy mode until we fully migrate to generations: like exclude deletes
+    /// timeline only locally, but ignores generation number.
+    DeleteLocal,
+    /// This node is getting excluded, delete timeline locally.
+    Exclude(membership::Configuration),
 }
 
 /// Create temp directory for a new timeline. It needs to be located on the same

@@ -1,4 +1,5 @@
 use hyper::{Body, Request, Response, StatusCode};
+use safekeeper_api::membership;
 use safekeeper_api::models;
 use safekeeper_api::models::AcceptorStateStatus;
 use safekeeper_api::models::SafekeeperStatus;
@@ -42,6 +43,7 @@ use utils::{
 
 use crate::debug_dump::TimelineDigestRequest;
 use crate::safekeeper::TermLsn;
+use crate::timelines_global_map::DeleteOrExclude;
 use crate::timelines_global_map::TimelineDeleteResult;
 use crate::GlobalTimelines;
 use crate::SafeKeeperConf;
@@ -83,10 +85,13 @@ async fn tenant_delete_handler(mut request: Request<Body>) -> Result<Response<Bo
     check_permission(&request, Some(tenant_id))?;
     ensure_no_body(&mut request).await?;
     let global_timelines = get_global_timelines(&request);
-    // FIXME: `delete_force_all_for_tenant` can return an error for multiple different reasons;
-    // Using an `InternalServerError` should be fixed when the types support it
+    let action = if only_local {
+        DeleteOrExclude::DeleteLocal
+    } else {
+        DeleteOrExclude::Delete
+    };
     let delete_info = global_timelines
-        .delete_all_for_tenant(&tenant_id, only_local)
+        .delete_all_for_tenant(&tenant_id, action)
         .await
         .map_err(ApiError::InternalServerError)?;
     json_response(
@@ -218,12 +223,15 @@ async fn timeline_delete_handler(mut request: Request<Body>) -> Result<Response<
     check_permission(&request, Some(ttid.tenant_id))?;
     ensure_no_body(&mut request).await?;
     let global_timelines = get_global_timelines(&request);
-    // FIXME: `delete_force` can fail from both internal errors and bad requests. Add better
-    // error handling here when we're able to.
+    let action = if only_local {
+        DeleteOrExclude::DeleteLocal
+    } else {
+        DeleteOrExclude::Delete
+    };
     let resp = global_timelines
-        .delete(&ttid, only_local)
+        .delete_or_exclude(&ttid, action)
         .await
-        .map_err(ApiError::InternalServerError)?;
+        .map_err(ApiError::from)?;
     json_response(StatusCode::OK, resp)
 }
 
@@ -277,6 +285,64 @@ async fn timeline_snapshot_handler(request: Request<Body>) -> Result<Response<Bo
     Ok(response)
 }
 
+/// Error type for delete_or_exclude: either generation conflict or something
+/// internal.
+#[derive(thiserror::Error, Debug)]
+pub enum DeleteOrExcludeError {
+    #[error("refused to switch into excluding mconf {requested}, current: {current}")]
+    Conflict {
+        requested: membership::Configuration,
+        current: membership::Configuration,
+    },
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+/// Convert DeleteOrExcludeError to ApiError.
+impl From<DeleteOrExcludeError> for ApiError {
+    fn from(de: DeleteOrExcludeError) -> ApiError {
+        match de {
+            DeleteOrExcludeError::Conflict {
+                requested: _,
+                current: _,
+            } => ApiError::Conflict(de.to_string()),
+            DeleteOrExcludeError::Other(e) => ApiError::InternalServerError(e),
+        }
+    }
+}
+
+/// Remove timeline locally after this node has been excluded from the
+/// membership configuration. The body is the same as in the membership endpoint
+/// -- conf where node is excluded -- and in principle single ep could be used
+/// for both actions, but since this is a data deletion op let's keep them
+/// separate.
+async fn timeline_exclude_handler(mut request: Request<Body>) -> Result<Response<Body>, ApiError> {
+    let ttid = TenantTimelineId::new(
+        parse_request_param(&request, "tenant_id")?,
+        parse_request_param(&request, "timeline_id")?,
+    );
+    check_permission(&request, Some(ttid.tenant_id))?;
+
+    let global_timelines = get_global_timelines(&request);
+    let data: models::TimelineMembershipSwitchRequest = json_request(&mut request).await?;
+    let my_id = get_conf(&request).my_id;
+    // If request doesn't exclude is, membership switch endpoint should be used
+    // instead.
+    if data.mconf.contains(my_id) {
+        return Err(ApiError::Forbidden(format!(
+            "refused to switch into {}, node {} is member of it",
+            data.mconf, my_id
+        )));
+    }
+    let action = DeleteOrExclude::Exclude(data.mconf);
+
+    let resp = global_timelines
+        .delete_or_exclude(&ttid, action)
+        .await
+        .map_err(ApiError::from)?;
+    json_response(StatusCode::OK, resp)
+}
+
 /// Consider switching timeline membership configuration to the provided one.
 async fn timeline_membership_handler(
     mut request: Request<Body>,
@@ -291,6 +357,14 @@ async fn timeline_membership_handler(
     let tli = global_timelines.get(ttid).map_err(ApiError::from)?;
 
     let data: models::TimelineMembershipSwitchRequest = json_request(&mut request).await?;
+    let my_id = get_conf(&request).my_id;
+    // If request excludes us, exclude endpoint should be used instead.
+    if !data.mconf.contains(my_id) {
+        return Err(ApiError::Forbidden(format!(
+            "refused to switch into {}, node {} is not a member of it",
+            data.mconf, my_id
+        )));
+    }
     let req_gen = data.mconf.generation;
     let response = tli
         .membership_switch(data.mconf)
@@ -655,6 +729,9 @@ pub fn make_router(
         })
         .post("/v1/pull_timeline", |r| {
             request_span(r, timeline_pull_handler)
+        })
+        .put("/v1/tenant/:tenant_id/timeline/:timeline_id/exclude", |r| {
+            request_span(r, timeline_exclude_handler)
         })
         .get(
             "/v1/tenant/:tenant_id/timeline/:timeline_id/snapshot/:destination_id",
