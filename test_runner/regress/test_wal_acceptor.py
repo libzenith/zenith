@@ -1727,7 +1727,7 @@ def test_replace_safekeeper(neon_env_builder: NeonEnvBuilder):
 
 
 @pytest.mark.parametrize("auth_enabled", [False, True])
-def test_delete_force(neon_env_builder: NeonEnvBuilder, auth_enabled: bool):
+def test_delete(neon_env_builder: NeonEnvBuilder, auth_enabled: bool):
     neon_env_builder.auth_enabled = auth_enabled
     env = neon_env_builder.init_start()
 

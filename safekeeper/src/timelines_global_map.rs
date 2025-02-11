@@ -18,7 +18,6 @@ use safekeeper_api::ServerInfo;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::fs;
@@ -452,17 +451,14 @@ impl GlobalTimelines {
         &self,
         ttid: &TenantTimelineId,
         only_local: bool,
-    ) -> Result<TimelineDeleteForceResult> {
+    ) -> Result<TimelineDeleteResult> {
         let tli_res = {
             let state = self.state.lock().unwrap();
 
             if state.tombstones.contains_key(ttid) {
                 // Presence of a tombstone guarantees that a previous deletion has completed and there is no work to do.
                 info!("Timeline {ttid} was already deleted");
-                return Ok(TimelineDeleteForceResult {
-                    dir_existed: false,
-                    was_active: false,
-                });
+                return Ok(TimelineDeleteResult { dir_existed: false });
             }
 
             state.get(ttid)
@@ -470,8 +466,6 @@ impl GlobalTimelines {
 
         let result = match tli_res {
             Ok(timeline) => {
-                let was_active = timeline.broker_active.load(Ordering::Relaxed);
-
                 info!("deleting timeline {}, only_local={}", ttid, only_local);
                 timeline.shutdown().await;
 
@@ -480,20 +474,14 @@ impl GlobalTimelines {
 
                 let dir_existed = timeline.delete(&mut shared_state, only_local).await?;
 
-                Ok(TimelineDeleteForceResult {
-                    dir_existed,
-                    was_active, // TODO: we probably should remove this field
-                })
+                Ok(TimelineDeleteResult { dir_existed })
             }
             Err(_) => {
                 // Timeline is not memory, but it may still exist on disk in broken state.
                 let dir_path = get_timeline_dir(self.state.lock().unwrap().conf.as_ref(), ttid);
                 let dir_existed = delete_dir(dir_path)?;
 
-                Ok(TimelineDeleteForceResult {
-                    dir_existed,
-                    was_active: false,
-                })
+                Ok(TimelineDeleteResult { dir_existed })
             }
         };
 
@@ -515,7 +503,7 @@ impl GlobalTimelines {
         &self,
         tenant_id: &TenantId,
         only_local: bool,
-    ) -> Result<HashMap<TenantTimelineId, TimelineDeleteForceResult>> {
+    ) -> Result<HashMap<TenantTimelineId, TimelineDeleteResult>> {
         info!("deleting all timelines for tenant {}", tenant_id);
         let to_delete = self.get_all_for_tenant(*tenant_id);
 
@@ -566,9 +554,8 @@ impl GlobalTimelines {
 }
 
 #[derive(Clone, Copy, Serialize)]
-pub struct TimelineDeleteForceResult {
+pub struct TimelineDeleteResult {
     pub dir_existed: bool,
-    pub was_active: bool,
 }
 
 /// Deletes directory and it's contents. Returns false if directory does not exist.

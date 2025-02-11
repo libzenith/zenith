@@ -42,7 +42,7 @@ use utils::{
 
 use crate::debug_dump::TimelineDigestRequest;
 use crate::safekeeper::TermLsn;
-use crate::timelines_global_map::TimelineDeleteForceResult;
+use crate::timelines_global_map::TimelineDeleteResult;
 use crate::GlobalTimelines;
 use crate::SafeKeeperConf;
 use crate::{copy_timeline, debug_dump, patch_control_file, pull_timeline};
@@ -94,7 +94,7 @@ async fn tenant_delete_handler(mut request: Request<Body>) -> Result<Response<Bo
         delete_info
             .iter()
             .map(|(ttid, resp)| (format!("{}", ttid.timeline_id), *resp))
-            .collect::<HashMap<String, TimelineDeleteForceResult>>(),
+            .collect::<HashMap<String, TimelineDeleteResult>>(),
     )
 }
 
