@@ -67,6 +67,7 @@ tokio-stream.workspace = true
 tokio-util.workspace = true
 toml_edit = { workspace = true, features = [ "serde" ] }
 tracing.workspace = true
+tracing-utils.workspace = true
 url.workspace = true
 walkdir.workspace = true
 metrics.workspace = true

@@ -123,6 +123,8 @@ pub struct ConfigToml {
     pub page_service_pipelining: PageServicePipeliningConfig,
     pub get_vectored_concurrent_io: GetVectoredConcurrentIo,
     pub enable_read_path_debugging: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracing: Option<Tracing>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -178,6 +180,58 @@ pub enum GetVectoredConcurrentIo {
     /// If the PS PageCache miss rate is low, this improves
     /// throughput dramatically.
     SidecarTask,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Ratio {
+    pub numerator: usize,
+    pub denominator: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct OtelExporterConfig {
+    pub endpoint: String,
+    pub protocol: OtelExporterProtocol,
+    #[serde(with = "humantime_serde")]
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OtelExporterProtocol {
+    Grpc,
+    HttpBinary,
+    HttpJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "kebab-case")]
+pub struct Tracing {
+    pub sampling_ratio: Ratio,
+    pub export_config: OtelExporterConfig,
+}
+
+impl From<&OtelExporterConfig> for tracing_utils::ExportConfig {
+    fn from(val: &OtelExporterConfig) -> Self {
+        tracing_utils::ExportConfig {
+            endpoint: Some(val.endpoint.clone()),
+            protocol: val.protocol.into(),
+            timeout: val.timeout,
+        }
+    }
+}
+
+impl From<OtelExporterProtocol> for tracing_utils::Protocol {
+    fn from(val: OtelExporterProtocol) -> Self {
+        match val {
+            OtelExporterProtocol::Grpc => tracing_utils::Protocol::Grpc,
+            OtelExporterProtocol::HttpJson => tracing_utils::Protocol::HttpJson,
+            OtelExporterProtocol::HttpBinary => tracing_utils::Protocol::HttpBinary,
+        }
+    }
 }
 
 pub mod statvfs {
@@ -518,6 +572,7 @@ impl Default for ConfigToml {
             } else {
                 None
             },
+            tracing: None,
         }
     }
 }

@@ -22,7 +22,8 @@ pub async fn init_tracing_and_logging(default_log_level: &str) -> anyhow::Result
         .with_writer(std::io::stderr);
 
     // Initialize OpenTelemetry
-    let otlp_layer = tracing_utils::init_tracing("compute_ctl").await;
+    let otlp_layer =
+        tracing_utils::init_tracing("compute_ctl", tracing_utils::ExportConfig::default()).await;
 
     // Put it all together
     tracing_subscriber::registry()

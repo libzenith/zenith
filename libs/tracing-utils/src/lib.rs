@@ -21,7 +21,7 @@
 //!         .with_writer(std::io::stderr);
 //!
 //!     // Initialize OpenTelemetry. Exports tracing spans as OpenTelemetry traces
-//!     let otlp_layer = tracing_utils::init_tracing("my_application").await;
+//!     let otlp_layer = tracing_utils::init_tracing("my_application", tracing_utils::ExportConfig::default()).await;
 //!
 //!     // Put it all together
 //!     tracing_subscriber::registry()
@@ -31,13 +31,15 @@
 //!         .init();
 //! }
 //! ```
-#![deny(unsafe_code)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod http;
+pub mod perf_span;
 
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::KeyValue;
+use opentelemetry_otlp::WithExportConfig;
+pub use opentelemetry_otlp::{ExportConfig, Protocol};
 use tracing::Subscriber;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
@@ -69,19 +71,28 @@ use tracing_subscriber::Layer;
 ///
 /// This doesn't block, but is marked as 'async' to hint that this must be called in
 /// asynchronous execution context.
-pub async fn init_tracing<S>(service_name: &str) -> Option<impl Layer<S>>
+pub async fn init_tracing<S>(
+    service_name: &str,
+    export_config: ExportConfig,
+) -> Option<impl Layer<S>>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
     if std::env::var("OTEL_SDK_DISABLED") == Ok("true".to_string()) {
         return None;
     };
-    Some(init_tracing_internal(service_name.to_string()))
+    Some(init_tracing_internal(
+        service_name.to_string(),
+        export_config,
+    ))
 }
 
 /// Like `init_tracing`, but creates a separate tokio Runtime for the tracing
 /// tasks.
-pub fn init_tracing_without_runtime<S>(service_name: &str) -> Option<impl Layer<S>>
+pub fn init_tracing_without_runtime<S>(
+    service_name: &str,
+    export_config: ExportConfig,
+) -> Option<impl Layer<S>>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
@@ -112,16 +123,20 @@ where
     ));
     let _guard = runtime.enter();
 
-    Some(init_tracing_internal(service_name.to_string()))
+    Some(init_tracing_internal(
+        service_name.to_string(),
+        export_config,
+    ))
 }
 
-fn init_tracing_internal<S>(service_name: String) -> impl Layer<S>
+fn init_tracing_internal<S>(service_name: String, export_config: ExportConfig) -> impl Layer<S>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
     // Sets up exporter from the OTEL_EXPORTER_* environment variables.
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        .with_export_config(export_config)
         .build()
         .expect("could not initialize opentelemetry exporter");
 

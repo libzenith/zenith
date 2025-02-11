@@ -4165,6 +4165,7 @@ dependencies = [
  "tokio-util",
  "toml_edit",
  "tracing",
+ "tracing-utils",
  "url",
  "utils",
  "wal_decoder",
@@ -4201,6 +4202,7 @@ dependencies = [
  "strum",
  "strum_macros",
  "thiserror 1.0.69",
+ "tracing-utils",
  "utils",
 ]
 
@@ -7365,6 +7367,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "pin-project-lite",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
@@ -7614,6 +7617,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-subscriber",
+ "tracing-utils",
  "url",
  "uuid",
  "walkdir",

@@ -4,6 +4,7 @@ use anyhow::Context;
 use metrics::{IntCounter, IntCounterVec};
 use once_cell::sync::Lazy;
 use strum_macros::{EnumString, VariantNames};
+use tracing::Dispatch;
 
 /// Logs a critical error, similarly to `tracing::error!`. This will:
 ///
@@ -121,6 +122,15 @@ pub enum TracingErrorLayerEnablement {
     EnableWithRustLogFilter,
 }
 
+pub enum OtelEnablement {
+    Disabled,
+    Enabled {
+        service_name: String,
+        export_config: tracing_utils::ExportConfig,
+        runtime: &'static tokio::runtime::Runtime,
+    },
+}
+
 /// Where the logging should output to.
 #[derive(Clone, Copy)]
 pub enum Output {
@@ -128,11 +138,24 @@ pub enum Output {
     Stderr,
 }
 
+pub struct OtelGuard {
+    pub dispatch: Dispatch,
+}
+
+impl Drop for OtelGuard {
+    fn drop(&mut self) {
+        tracing_utils::shutdown_tracing();
+    }
+}
+
+pub const PERF_TRACE_TARGET: &str = "P";
+
 pub fn init(
     log_format: LogFormat,
     tracing_error_layer_enablement: TracingErrorLayerEnablement,
+    otel_enablement: OtelEnablement,
     output: Output,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<OtelGuard>> {
     // We fall back to printing all spans at info-level or above if
     // the RUST_LOG environment variable is not set.
     let rust_log_env_filter = || {
@@ -161,6 +184,7 @@ pub fn init(
         };
         log_layer.with_filter(rust_log_env_filter())
     });
+
     let r = r.with(
         TracingEventCountLayer(&TRACING_EVENT_COUNT_METRIC).with_filter(rust_log_env_filter()),
     );
@@ -171,7 +195,25 @@ pub fn init(
         TracingErrorLayerEnablement::Disabled => r.init(),
     }
 
-    Ok(())
+    let otel_subscriber = match otel_enablement {
+        OtelEnablement::Disabled => None,
+        OtelEnablement::Enabled {
+            service_name,
+            export_config,
+            runtime,
+        } => {
+            let otel_layer =
+                runtime.block_on(tracing_utils::init_tracing(&service_name, export_config));
+            let otel_subscriber = tracing_subscriber::registry().with(otel_layer);
+            let otel_dispatch = Dispatch::new(otel_subscriber);
+
+            Some(otel_dispatch)
+        }
+    };
+
+    let otel_guard = otel_subscriber.map(|dispatch| OtelGuard { dispatch });
+
+    Ok(otel_guard)
 }
 
 /// Disable the default rust panic hook by using `set_hook`.

@@ -10,6 +10,7 @@ from fixtures.log_helper import log
 from fixtures.neon_fixtures import (
     NeonEnv,
     NeonEnvBuilder,
+    PageserverTracingConfig,
     PgBin,
     wait_for_last_flush_lsn,
 )
@@ -113,6 +114,15 @@ def setup_and_run_pagebench_benchmark(
     neon_env_builder.pageserver_config_override = (
         f"page_cache_size={page_cache_size}; max_file_descriptors={max_file_descriptors}"
     )
+
+    tracing_config = PageserverTracingConfig(
+        sampling_ratio=(0, 1000),
+        endpoint="http://localhost:4318/v1/traces",
+        protocol="http-binary",
+        timeout="10s",
+    )
+    neon_env_builder.pageserver_tracing_config = tracing_config
+    ratio = tracing_config.sampling_ratio[0] / tracing_config.sampling_ratio[1]
     params.update(
         {
             "pageserver_config_override.page_cache_size": (
@@ -120,6 +130,7 @@ def setup_and_run_pagebench_benchmark(
                 {"unit": "byte"},
             ),
             "pageserver_config_override.max_file_descriptors": (max_file_descriptors, {"unit": ""}),
+            "pageserver_config_override.sampling_ratio": (ratio, {"unit": ""}),
         }
     )
 

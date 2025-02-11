@@ -220,9 +220,10 @@ pageserver_runtime!(COMPUTE_REQUEST_RUNTIME, "compute request worker");
 pageserver_runtime!(MGMT_REQUEST_RUNTIME, "mgmt request worker");
 pageserver_runtime!(WALRECEIVER_RUNTIME, "walreceiver worker");
 pageserver_runtime!(BACKGROUND_RUNTIME, "background op worker");
+pageserver_runtime!(OTEL_RUNTIME, "open telemetry worker");
 // Bump this number when adding a new pageserver_runtime!
 // SAFETY: it's obviously correct
-const NUM_MULTIPLE_RUNTIMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
+const NUM_MULTIPLE_RUNTIMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5) };
 
 #[derive(Debug, Clone, Copy)]
 pub struct PageserverTaskId(u64);
