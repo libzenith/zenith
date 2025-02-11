@@ -300,7 +300,7 @@ lfc_shmem_startup(void)
 								 n_chunks + 1, n_chunks + 1,
 								 &info,
 								 HASH_ELEM | HASH_BLOBS);
-		memset(lfc_ctl, 0, sizeof *lfc_ctl);
+		memset(lfc_ctl, 0, sizeof(FileCacheControl));
 		dlist_init(&lfc_ctl->lru);
 		dlist_init(&lfc_ctl->holes);
 
@@ -377,7 +377,10 @@ lfc_change_limit_hook(int newval, void *extra)
 
 	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
 
-	lfc_ctl->resizes += lfc_ctl->limit != new_size;
+	if (lfc_ctl->limit != new_size)
+	{
+		lfc_ctl->resizes += 1;
+	}
 
 	while (new_size < lfc_ctl->used && !dlist_is_empty(&lfc_ctl->lru))
 	{

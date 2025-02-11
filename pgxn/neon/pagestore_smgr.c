@@ -181,8 +181,7 @@ typedef enum PrefetchStatus
 /* must fit in uint8; bits 0x1 are used */
 typedef enum {
 	PRFSF_NONE	= 0x0,
-	PRFSF_SEQ	= 0x1,
-	PRFSF_LFC	= 0x2,
+	PRFSF_LFC	= 0x1  /* received prefetch result is stored in LFC */
 } PrefetchRequestFlags;
 
 typedef struct PrefetchRequest
