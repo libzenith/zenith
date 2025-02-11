@@ -460,8 +460,10 @@ prefetch_pump_state(void)
 			 * Store prefetched result in LFC (please read comments to lfc_prefetch
 			 * explaining why it can be done without holding shared buffer lock
 			 */
-			(void)lfc_prefetch(BufTagGetNRelFileInfo(slot->buftag), slot->buftag.forkNum, slot->buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
-			slot->flags |= PRFSF_LFC;
+			if (lfc_prefetch(BufTagGetNRelFileInfo(slot->buftag), slot->buftag.forkNum, slot->buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since))
+			{
+				slot->flags |= PRFSF_LFC;
+			}
 		}
 	}
 }
@@ -732,8 +734,10 @@ prefetch_read(PrefetchRequest *slot)
 			 * Store prefetched result in LFC (please read comments to lfc_prefetch
 			 * explaining why it can be done without holding shared buffer lock
 			 */
-			(void)lfc_prefetch(BufTagGetNRelFileInfo(buftag), buftag.forkNum, buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
-			slot->flags |= PRFSF_LFC;
+			if (lfc_prefetch(BufTagGetNRelFileInfo(buftag), buftag.forkNum, buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since))
+			{
+				slot->flags |= PRFSF_LFC;
+			}
 		}
 		return true;
 	}
