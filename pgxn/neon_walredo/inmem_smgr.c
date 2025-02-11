@@ -96,7 +96,7 @@ static void inmem_writeback(SMgrRelation reln, ForkNumber forknum,
 							BlockNumber blocknum, BlockNumber nblocks);
 static BlockNumber inmem_nblocks(SMgrRelation reln, ForkNumber forknum);
 static void inmem_truncate(SMgrRelation reln, ForkNumber forknum,
-						   BlockNumber nblocks);
+						   BlockNumber old_blocks, BlockNumber nblocks);
 static void inmem_immedsync(SMgrRelation reln, ForkNumber forknum);
 #if PG_MAJORVERSION_NUM >= 17
 static void inmem_registersync(SMgrRelation reln, ForkNumber forknum);
@@ -345,7 +345,7 @@ inmem_nblocks(SMgrRelation reln, ForkNumber forknum)
  *	inmem_truncate() -- Truncate relation to specified number of blocks.
  */
 static void
-inmem_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
+inmem_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumber old_blocks, BlockNumber nblocks)
 {
 }
 
