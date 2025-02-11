@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use compute_api::spec::{Database, PgIdent, Role};
+use compute_api::spec::{ComputeAuditLogLevel, Database, PgIdent, Role};
 use futures::future::join_all;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -43,7 +43,7 @@ use crate::spec_apply::ApplySpecPhase::{
     CreateAndAlterDatabases, CreateAndAlterRoles, CreateAvailabilityCheck, CreateSchemaNeon,
     CreateSuperUser, DropInvalidDatabases, DropRoles, FinalizeDropLogicalSubscriptions,
     HandleNeonExtension, HandleOtherExtensions, RenameAndDeleteDatabases, RenameRoles,
-    RunInEachDatabase,
+    RunInEachDatabase, SetupAuditLogging, SetupHipaaLogging,
 };
 use crate::spec_apply::PerDatabasePhase;
 use crate::spec_apply::PerDatabasePhase::{
@@ -1161,6 +1161,13 @@ impl ComputeNode {
                 phases.push(FinalizeDropLogicalSubscriptions);
             }
 
+            match spec.audit_log_level
+            {
+                ComputeAuditLogLevel::Log => phases.push(SetupAuditLogging),
+                ComputeAuditLogLevel::Hipaa => phases.push(SetupHipaaLogging),
+                ComputeAuditLogLevel::Off => {}
+            }
+
             for phase in phases {
                 debug!("Applying phase {:?}", &phase);
                 apply_operations(
@@ -1536,6 +1543,29 @@ impl ComputeNode {
                 )? {
                     info!("updated postgresql.conf to set neon.disable_logical_replication_subscribers=false");
                 }
+
+                // TODO: clarify what settings we need to use.
+                // TODO: Decide if we want to set these settings here or in the control plane?
+                match pspec.spec.audit_log_level {
+                    ComputeAuditLogLevel::Log => {
+                        if config::line_in_file(
+                            &postgresql_conf_path,
+                            "pgaudit.log='write, ddl, function, role'",
+                        )? {
+                            info!("updated postgresql.conf to set pgaudit.log='write, ddl, function, role'");
+                        }
+                    }
+                    ComputeAuditLogLevel::Hipaa => {
+                        if config::line_in_file(
+                            &postgresql_conf_path,
+                            "pgaudit.log='write, ddl, function, role'",
+                        )? {
+                            info!("updated postgresql.conf to set pgaudit.log='write, ddl, function, role'");
+                        }
+                    }
+                    ComputeAuditLogLevel::Off => {}
+                }
+
                 self.pg_reload_conf()?;
             }
             self.post_apply_config()?;

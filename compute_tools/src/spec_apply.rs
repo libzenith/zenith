@@ -60,6 +60,8 @@ pub enum ApplySpecPhase {
     CreateAndAlterDatabases,
     CreateSchemaNeon,
     RunInEachDatabase { db: DB, subphase: PerDatabasePhase },
+    SetupAuditLogging,
+    SetupHipaaLogging,
     HandleOtherExtensions,
     HandleNeonExtension,
     CreateAvailabilityCheck,
@@ -671,6 +673,40 @@ async fn get_operations<'a>(
                 }
             }
             Ok(Box::new(empty()))
+        }
+
+        ApplySpecPhase::SetupAuditLogging => {
+            if let Some(libs) = spec.cluster.settings.find("shared_preload_libraries") {
+                if libs.contains("pgaudit") {
+                    return Ok(Box::new(once(Operation {
+                        query: String::from("CREATE EXTENSION IF NOT EXISTS pgaudit"),
+                        comment: Some(String::from("create pgaudit extension")),
+                    })));
+                }
+            }
+            Ok(Box::new(empty()))
+        }
+        ApplySpecPhase::SetupHipaaLogging => {
+            let mut operations = vec![];
+
+            if let Some(libs) = spec.cluster.settings.find("shared_preload_libraries") {
+                if libs.contains("pgaudit") {
+                    operations.push(Operation {
+                        query: String::from("CREATE EXTENSION IF NOT EXISTS pgaudit"),
+                        comment: Some(String::from("create pgaudit extension")),
+                    });
+                }
+            }
+            if let Some(libs) = spec.cluster.settings.find("shared_preload_libraries") {
+                if libs.contains("pgauditlogtofile") {
+                    operations.push(Operation {
+                        query: String::from("CREATE EXTENSION IF NOT EXISTS pgauditlogtofile"),
+                        comment: Some(String::from("create pgauditlogtofile extension")),
+                    });
+                }
+            }
+
+            Ok(Box::new(operations.into_iter()))
         }
         ApplySpecPhase::HandleNeonExtension => {
             let operations = vec![
