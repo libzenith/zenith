@@ -86,7 +86,7 @@ async fn tenant_delete_handler(mut request: Request<Body>) -> Result<Response<Bo
     // FIXME: `delete_force_all_for_tenant` can return an error for multiple different reasons;
     // Using an `InternalServerError` should be fixed when the types support it
     let delete_info = global_timelines
-        .delete_force_all_for_tenant(&tenant_id, only_local)
+        .delete_all_for_tenant(&tenant_id, only_local)
         .await
         .map_err(ApiError::InternalServerError)?;
     json_response(

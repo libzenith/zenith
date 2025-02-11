@@ -1112,7 +1112,7 @@ impl ManagerTimeline {
 }
 
 /// Deletes directory and it's contents. Returns false if directory does not exist.
-async fn delete_dir(path: &Utf8PathBuf) -> Result<bool> {
+pub async fn delete_dir(path: &Utf8PathBuf) -> Result<bool> {
     match fs::remove_dir_all(path).await {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),

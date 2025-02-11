@@ -5,7 +5,7 @@
 use crate::defaults::DEFAULT_EVICTION_CONCURRENCY;
 use crate::rate_limit::RateLimiter;
 use crate::state::TimelinePersistentState;
-use crate::timeline::{get_tenant_dir, get_timeline_dir, Timeline, TimelineError};
+use crate::timeline::{delete_dir, get_tenant_dir, get_timeline_dir, Timeline, TimelineError};
 use crate::timelines_set::TimelinesSet;
 use crate::wal_storage::Storage;
 use crate::{control_file, wal_storage, SafeKeeperConf};
@@ -479,7 +479,7 @@ impl GlobalTimelines {
             Err(_) => {
                 // Timeline is not memory, but it may still exist on disk in broken state.
                 let dir_path = get_timeline_dir(self.state.lock().unwrap().conf.as_ref(), ttid);
-                let dir_existed = delete_dir(dir_path)?;
+                let dir_existed = delete_dir(&dir_path).await?;
 
                 Ok(TimelineDeleteResult { dir_existed })
             }
@@ -499,7 +499,7 @@ impl GlobalTimelines {
     /// retry tenant deletion again later.
     ///
     /// If only_local, doesn't remove WAL segments in remote storage.
-    pub async fn delete_force_all_for_tenant(
+    pub async fn delete_all_for_tenant(
         &self,
         tenant_id: &TenantId,
         only_local: bool,
@@ -532,10 +532,8 @@ impl GlobalTimelines {
         // Note that we could concurrently create new timelines while we were deleting them,
         // so the directory may be not empty. In this case timelines will have bad state
         // and timeline background jobs can panic.
-        delete_dir(get_tenant_dir(
-            self.state.lock().unwrap().conf.as_ref(),
-            tenant_id,
-        ))?;
+        let tenant_dir = get_tenant_dir(self.state.lock().unwrap().conf.as_ref(), tenant_id);
+        delete_dir(&tenant_dir).await?;
 
         Ok(deleted)
     }
@@ -556,15 +554,6 @@ impl GlobalTimelines {
 #[derive(Clone, Copy, Serialize)]
 pub struct TimelineDeleteResult {
     pub dir_existed: bool,
-}
-
-/// Deletes directory and it's contents. Returns false if directory does not exist.
-fn delete_dir(path: Utf8PathBuf) -> Result<bool> {
-    match std::fs::remove_dir_all(path) {
-        Ok(_) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e.into()),
-    }
 }
 
 /// Create temp directory for a new timeline. It needs to be located on the same
