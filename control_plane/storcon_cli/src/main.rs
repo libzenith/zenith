@@ -22,7 +22,7 @@ use pageserver_api::{
 };
 use pageserver_client::mgmt_api::{self};
 use reqwest::{Method, StatusCode, Url};
-use utils::id::{NodeId, TenantId};
+use utils::id::{NodeId, TenantId, TimelineId};
 
 use pageserver_api::controller_api::{
     NodeConfigureRequest, NodeRegisterRequest, NodeSchedulingPolicy, PlacementPolicy,
@@ -238,6 +238,19 @@ enum Command {
         node_id: NodeId,
         #[arg(long)]
         scheduling_policy: SkSchedulingPolicyArg,
+    },
+    /// Downloads any missing heatmap layers for all shard for a given timeline
+    DownloadHeatmapLayers {
+        /// Tenant ID or tenant shard ID. When an unsharded tenant ID is specified,
+        /// the operation is performed on all shards. When a sharded tenant ID is
+        /// specified, the operation is only performed on the specified shard.
+        #[arg(long)]
+        tenant_shard_id: TenantShardId,
+        #[arg(long)]
+        timeline_id: TimelineId,
+        /// Optional: Maximum download concurrency (default is 16)
+        #[arg(long)]
+        concurrency: Option<usize>,
     },
 }
 
@@ -1246,6 +1259,24 @@ async fn main() -> anyhow::Result<()> {
                 "Scheduling policy of {node_id} set to {}",
                 String::from(scheduling_policy)
             );
+        }
+        Command::DownloadHeatmapLayers {
+            tenant_shard_id,
+            timeline_id,
+            concurrency,
+        } => {
+            let mut path = format!(
+                "/v1/tenant/{}/timeline/{}/download_heatmap_layers",
+                tenant_shard_id, timeline_id,
+            );
+
+            if let Some(c) = concurrency {
+                path = format!("{path}?concurrency={c}");
+            }
+
+            storcon_client
+                .dispatch::<(), ()>(Method::POST, path, None)
+                .await?;
         }
     }
 
