@@ -332,8 +332,10 @@ def test_sql_regress(
 
 
 @skip_in_debug_build("only run with release build")
+@pytest.mark.parametrize("reldir_type", ["v1", "v2"])
 def test_tx_abort_with_many_relations(
     neon_env_builder: NeonEnvBuilder,
+    reldir_type: str,
 ):
     """
     This is not a pg_regress test as such, but perhaps it should be -- this test exercises postgres
@@ -342,7 +344,11 @@ def test_tx_abort_with_many_relations(
     Reproducer for https://github.com/neondatabase/neon/issues/9505
     """
 
-    env = neon_env_builder.init_start()
+    env = neon_env_builder.init_start(
+        initial_tenant_conf={
+            "rel_size_v2_enabled": "true" if reldir_type == "v2" else "false",
+        }
+    )
     ep = env.endpoints.create_start(
         "main",
         tenant_id=env.initial_tenant,
@@ -354,48 +360,65 @@ def test_tx_abort_with_many_relations(
 
     # How many relations: this number is tuned to be long enough to take tens of seconds
     # if the rollback code path is buggy, tripping the test's timeout.
-    n = 4000
+    if reldir_type == "v1":
+        n = 4000
+        step = 4000
+    else:
+        n = 100000
+        step = 5000
 
     def create():
         # Create many relations
         log.info(f"Creating {n} relations...")
-        ep.safe_psql_many(
-            [
-                "BEGIN",
-                f"""DO $$
-            DECLARE
-                i INT;
-                table_name TEXT;
-            BEGIN
-                FOR i IN 1..{n} LOOP
-                    table_name := 'table_' || i;
-                    EXECUTE 'CREATE TABLE IF NOT EXISTS ' || table_name || ' (id SERIAL PRIMARY KEY, data TEXT)';
-                END LOOP;
-            END $$;
-            """,
-                "COMMIT",
-            ]
-        )
+        begin = 0
+        while True:
+            end = begin + step
+            ep.safe_psql_many(
+                [
+                    "BEGIN",
+                    f"""DO $$
+                DECLARE
+                    i INT;
+                    table_name TEXT;
+                BEGIN
+                    FOR i IN {begin}..{end} LOOP
+                        table_name := 'table_' || i;
+                        EXECUTE 'CREATE TABLE IF NOT EXISTS ' || table_name || ' (id SERIAL PRIMARY KEY, data TEXT)';
+                    END LOOP;
+                END $$;
+                """,
+                    "COMMIT",
+                ]
+            )
+            begin = end
+            if begin >= n:
+                break
 
     def truncate():
         # Truncate relations, then roll back the transaction containing the truncations
         log.info(f"Truncating {n} relations...")
-        ep.safe_psql_many(
-            [
-                "BEGIN",
-                f"""DO $$
-            DECLARE
-                i INT;
-                table_name TEXT;
-            BEGIN
-                FOR i IN 1..{n} LOOP
-                    table_name := 'table_' || i;
-                    EXECUTE 'TRUNCATE ' || table_name ;
-                END LOOP;
-            END $$;
-            """,
-            ]
-        )
+        begin = 0
+        while True:
+            end = begin + step
+            ep.safe_psql_many(
+                [
+                    "BEGIN",
+                    f"""DO $$
+                DECLARE
+                    i INT;
+                    table_name TEXT;
+                BEGIN
+                    FOR i IN {begin}..{end} LOOP
+                        table_name := 'table_' || i;
+                        EXECUTE 'TRUNCATE ' || table_name ;
+                    END LOOP;
+                END $$;
+                """,
+                ]
+            )
+            begin = end
+            if begin >= n:
+                break
 
     def rollback_and_wait():
         log.info(f"Rolling back after truncating {n} relations...")
