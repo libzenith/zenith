@@ -1,7 +1,7 @@
 use crate::pageserver_client::PageserverClient;
 use crate::persistence::Persistence;
 use crate::{compute_hook, service};
-use pageserver_api::controller_api::{AvailabilityZone, PlacementPolicy};
+use pageserver_api::controller_api::{AvailabilityZone, MigrationConfig, PlacementPolicy};
 use pageserver_api::models::{
     LocationConfig, LocationConfigMode, LocationConfigSecondary, TenantConfig, TenantWaitLsnRequest,
 };
@@ -159,6 +159,22 @@ impl ReconcilerConfig {
 
     pub(crate) fn tenant_creation_hint(&self) -> bool {
         self.tenant_creation_hint
+    }
+}
+
+impl From<&MigrationConfig> for ReconcilerConfig {
+    fn from(value: &MigrationConfig) -> Self {
+        let mut builder = ReconcilerConfigBuilder::new();
+
+        if let Some(timeout) = value.secondary_warmup_timeout {
+            builder = builder.secondary_warmup_timeout(timeout)
+        }
+
+        if let Some(timeout) = value.secondary_download_request_timeout {
+            builder = builder.secondary_download_request_timeout(timeout)
+        }
+
+        builder.build()
     }
 }
 

@@ -294,6 +294,7 @@ impl DeleteTimelineFlow {
                 timeline_id,
                 local_metadata,
                 None, // Ancestor is not needed for deletion.
+                None, // Previous heatmap is not needed for deletion
                 tenant.get_timeline_resources_for(remote_client),
                 // Important. We dont pass ancestor above because it can be missing.
                 // Thus we need to skip the validation here.

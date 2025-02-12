@@ -40,6 +40,8 @@ use remote_timeline_client::manifest::{
 use remote_timeline_client::UploadQueueNotReadyError;
 use remote_timeline_client::FAILED_REMOTE_OP_RETRIES;
 use remote_timeline_client::FAILED_UPLOAD_WARN_THRESHOLD;
+use secondary::heatmap::HeatMapTenant;
+use secondary::heatmap::HeatMapTimeline;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
@@ -55,6 +57,7 @@ use timeline::offload::OffloadError;
 use timeline::CompactFlags;
 use timeline::CompactOptions;
 use timeline::CompactionError;
+use timeline::PreviousHeatmap;
 use timeline::ShutdownMode;
 use tokio::io::BufReader;
 use tokio::sync::watch;
@@ -262,6 +265,7 @@ struct TimelinePreload {
     timeline_id: TimelineId,
     client: RemoteTimelineClient,
     index_part: Result<MaybeDeletedIndexPart, DownloadError>,
+    previous_heatmap: Option<PreviousHeatmap>,
 }
 
 pub(crate) struct TenantPreload {
@@ -1128,6 +1132,7 @@ impl Tenant {
         resources: TimelineResources,
         mut index_part: IndexPart,
         metadata: TimelineMetadata,
+        previous_heatmap: Option<PreviousHeatmap>,
         ancestor: Option<Arc<Timeline>>,
         cause: LoadTimelineCause,
         ctx: &RequestContext,
@@ -1158,6 +1163,7 @@ impl Tenant {
         let timeline = self.create_timeline_struct(
             timeline_id,
             &metadata,
+            previous_heatmap,
             ancestor.clone(),
             resources,
             CreateTimelineCause::Load,
@@ -1557,8 +1563,18 @@ impl Tenant {
             }
         }
 
+        // TODO(vlad): Could go to S3 if the secondary is freezing cold and hasn't even
+        // pulled the first heatmap. Not entirely necessary since the storage controller
+        // will kick the secondary in any case and cause a download.
+        let maybe_heatmap_at = self.read_on_disk_heatmap().await;
+
         let timelines = self
-            .load_timelines_metadata(remote_timeline_ids, remote_storage, cancel)
+            .load_timelines_metadata(
+                remote_timeline_ids,
+                remote_storage,
+                maybe_heatmap_at,
+                cancel,
+            )
             .await?;
 
         Ok(TenantPreload {
@@ -1569,6 +1585,26 @@ impl Tenant {
                 .chain(offloaded_with_prefix.into_iter().map(|id| (id, None)))
                 .collect(),
         })
+    }
+
+    async fn read_on_disk_heatmap(&self) -> Option<(HeatMapTenant, std::time::Instant)> {
+        let on_disk_heatmap_path = self.conf.tenant_heatmap_path(&self.tenant_shard_id);
+        match tokio::fs::read_to_string(on_disk_heatmap_path).await {
+            Ok(heatmap) => match serde_json::from_str::<HeatMapTenant>(&heatmap) {
+                Ok(heatmap) => Some((heatmap, std::time::Instant::now())),
+                Err(err) => {
+                    error!("Failed to deserialize old heatmap: {err}");
+                    None
+                }
+            },
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::NotFound => None,
+                _ => {
+                    error!("Unexpected IO error reading old heatmap: {err}");
+                    None
+                }
+            },
+        }
     }
 
     ///
@@ -1658,7 +1694,10 @@ impl Tenant {
             match index_part {
                 MaybeDeletedIndexPart::IndexPart(index_part) => {
                     timeline_ancestors.insert(timeline_id, index_part.metadata.clone());
-                    remote_index_and_client.insert(timeline_id, (index_part, preload.client));
+                    remote_index_and_client.insert(
+                        timeline_id,
+                        (index_part, preload.client, preload.previous_heatmap),
+                    );
                 }
                 MaybeDeletedIndexPart::Deleted(index_part) => {
                     info!(
@@ -1677,7 +1716,7 @@ impl Tenant {
         // layer file.
         let sorted_timelines = tree_sort_timelines(timeline_ancestors, |m| m.ancestor_timeline())?;
         for (timeline_id, remote_metadata) in sorted_timelines {
-            let (index_part, remote_client) = remote_index_and_client
+            let (index_part, remote_client, previous_heatmap) = remote_index_and_client
                 .remove(&timeline_id)
                 .expect("just put it in above");
 
@@ -1697,6 +1736,7 @@ impl Tenant {
                     timeline_id,
                     index_part,
                     remote_metadata,
+                    previous_heatmap,
                     self.get_timeline_resources_for(remote_client),
                     LoadTimelineCause::Attach,
                     ctx,
@@ -1846,11 +1886,13 @@ impl Tenant {
     }
 
     #[instrument(skip_all, fields(timeline_id=%timeline_id))]
+    #[allow(clippy::too_many_arguments)]
     async fn load_remote_timeline(
         self: &Arc<Self>,
         timeline_id: TimelineId,
         index_part: IndexPart,
         remote_metadata: TimelineMetadata,
+        previous_heatmap: Option<PreviousHeatmap>,
         resources: TimelineResources,
         cause: LoadTimelineCause,
         ctx: &RequestContext,
@@ -1880,6 +1922,7 @@ impl Tenant {
             resources,
             index_part,
             remote_metadata,
+            previous_heatmap,
             ancestor,
             cause,
             ctx,
@@ -1891,14 +1934,29 @@ impl Tenant {
         self: &Arc<Tenant>,
         timeline_ids: HashSet<TimelineId>,
         remote_storage: &GenericRemoteStorage,
+        heatmap: Option<(HeatMapTenant, std::time::Instant)>,
         cancel: CancellationToken,
     ) -> anyhow::Result<HashMap<TimelineId, TimelinePreload>> {
+        let mut timeline_heatmaps = heatmap.map(|h| (h.0.into_timelines_index(), h.1));
+
         let mut part_downloads = JoinSet::new();
         for timeline_id in timeline_ids {
             let cancel_clone = cancel.clone();
+
+            let previous_timeline_heatmap = timeline_heatmaps.as_mut().and_then(|hs| {
+                hs.0.remove(&timeline_id).map(|h| PreviousHeatmap::Active {
+                    heatmap: h,
+                    read_at: hs.1,
+                })
+            });
             part_downloads.spawn(
-                self.load_timeline_metadata(timeline_id, remote_storage.clone(), cancel_clone)
-                    .instrument(info_span!("download_index_part", %timeline_id)),
+                self.load_timeline_metadata(
+                    timeline_id,
+                    remote_storage.clone(),
+                    previous_timeline_heatmap,
+                    cancel_clone,
+                )
+                .instrument(info_span!("download_index_part", %timeline_id)),
             );
         }
 
@@ -1946,6 +2004,7 @@ impl Tenant {
         self: &Arc<Tenant>,
         timeline_id: TimelineId,
         remote_storage: GenericRemoteStorage,
+        previous_heatmap: Option<PreviousHeatmap>,
         cancel: CancellationToken,
     ) -> impl Future<Output = TimelinePreload> {
         let client = self.build_timeline_client(timeline_id, remote_storage);
@@ -1961,6 +2020,7 @@ impl Tenant {
                 client,
                 timeline_id,
                 index_part,
+                previous_heatmap,
             }
         }
     }
@@ -2072,7 +2132,12 @@ impl Tenant {
             })?;
 
         let timeline_preload = self
-            .load_timeline_metadata(timeline_id, self.remote_storage.clone(), cancel.clone())
+            .load_timeline_metadata(
+                timeline_id,
+                self.remote_storage.clone(),
+                None,
+                cancel.clone(),
+            )
             .await;
 
         let index_part = match timeline_preload.index_part {
@@ -2106,6 +2171,7 @@ impl Tenant {
             timeline_id,
             index_part,
             remote_metadata,
+            None,
             timeline_resources,
             LoadTimelineCause::Unoffload,
             &ctx,
@@ -2821,7 +2887,7 @@ impl Tenant {
         };
         let metadata = index_part.metadata.clone();
         self
-            .load_remote_timeline(timeline_id, index_part, metadata, resources, LoadTimelineCause::ImportPgdata{
+            .load_remote_timeline(timeline_id, index_part, metadata, None, resources, LoadTimelineCause::ImportPgdata{
                 create_guard: timeline_create_guard, activate, }, &ctx)
             .await?
             .ready_to_activate()
@@ -4030,6 +4096,7 @@ impl Tenant {
         &self,
         new_timeline_id: TimelineId,
         new_metadata: &TimelineMetadata,
+        previous_heatmap: Option<PreviousHeatmap>,
         ancestor: Option<Arc<Timeline>>,
         resources: TimelineResources,
         cause: CreateTimelineCause,
@@ -4053,6 +4120,7 @@ impl Tenant {
             self.conf,
             Arc::clone(&self.tenant_conf),
             new_metadata,
+            previous_heatmap,
             ancestor,
             new_timeline_id,
             self.tenant_shard_id,
@@ -5124,6 +5192,7 @@ impl Tenant {
             .create_timeline_struct(
                 new_timeline_id,
                 new_metadata,
+                None,
                 ancestor,
                 resources,
                 CreateTimelineCause::Load,

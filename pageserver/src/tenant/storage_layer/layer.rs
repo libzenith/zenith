@@ -136,6 +136,22 @@ pub(crate) fn local_layer_path(
     }
 }
 
+pub(crate) enum LastEviction {
+    Never,
+    At(std::time::Instant),
+    Evicting,
+}
+
+impl LastEviction {
+    pub(crate) fn happened_after(&self, timepoint: std::time::Instant) -> bool {
+        match self {
+            LastEviction::Never => false,
+            LastEviction::At(evicted_at) => evicted_at > &timepoint,
+            LastEviction::Evicting => true,
+        }
+    }
+}
+
 impl Layer {
     /// Creates a layer value for a file we know to not be resident.
     pub(crate) fn for_evicted(
@@ -405,6 +421,17 @@ impl Layer {
         self.0.metadata()
     }
 
+    pub(crate) fn last_evicted_at(&self) -> LastEviction {
+        match self.0.last_evicted_at.try_lock() {
+            Ok(lock) => match *lock {
+                None => LastEviction::Never,
+                Some(at) => LastEviction::At(at),
+            },
+            Err(std::sync::TryLockError::WouldBlock) => LastEviction::Evicting,
+            Err(std::sync::TryLockError::Poisoned(p)) => panic!("Lock poisoned: {p}"),
+        }
+    }
+
     pub(crate) fn get_timeline_id(&self) -> Option<TimelineId> {
         self.0
             .timeline
@@ -656,7 +683,9 @@ struct LayerInner {
 
     /// When the Layer was last evicted but has not been downloaded since.
     ///
-    /// This is used solely for updating metrics. See [`LayerImplMetrics::redownload_after`].
+    /// This is used for skipping evicted layers from the previous heatmap (see
+    /// `[Timeline::generate_heatmap]`) and for updating metrics
+    /// (see [`LayerImplMetrics::redownload_after`]).
     last_evicted_at: std::sync::Mutex<Option<std::time::Instant>>,
 
     #[cfg(test)]
