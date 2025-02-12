@@ -130,11 +130,12 @@ pub(crate) async fn main() -> anyhow::Result<()> {
         (None, None)
     };
 
+    let s3_client = aws_sdk_s3::Client::new(aws_config.as_ref().unwrap());
+
     // Get source connection string either from S3 spec or direct argument
     let source_connection_string = if let Some(s3_prefix) = &args.s3_prefix {
         let spec: Spec = {
             let spec_key = s3_prefix.append("/spec.json");
-            let s3_client = aws_sdk_s3::Client::new(aws_config.as_ref().unwrap());
             let object = s3_client
                 .get_object()
                 .bucket(&spec_key.bucket)
@@ -439,9 +440,13 @@ pub(crate) async fn main() -> anyhow::Result<()> {
     // Only sync if s3_prefix was specified
     if let Some(s3_prefix) = args.s3_prefix {
         info!("upload pgdata");
-        aws_s3_sync::sync(Utf8Path::new(&pgdata_dir), &s3_prefix.append("/pgdata/"))
-            .await
-            .context("sync dump directory to destination")?;
+        aws_s3_sync::upload_dir_recursive(
+            &s3_client,
+            Utf8Path::new(&pgdata_dir),
+            &s3_prefix.append("/pgdata/"),
+        )
+        .await
+        .context("sync dump directory to destination")?;
 
         info!("write status");
         {
@@ -450,9 +455,13 @@ pub(crate) async fn main() -> anyhow::Result<()> {
             let status_file = status_dir.join("pgdata");
             std::fs::write(&status_file, serde_json::json!({"done": true}).to_string())
                 .context("write status file")?;
-            aws_s3_sync::sync(&status_dir, &s3_prefix.append("/status/"))
-                .await
-                .context("sync status directory to destination")?;
+            aws_s3_sync::upload_dir_recursive(
+                &s3_client,
+                &status_dir,
+                &s3_prefix.append("/status/"),
+            )
+            .await
+            .context("sync status directory to destination")?;
         }
     }
 

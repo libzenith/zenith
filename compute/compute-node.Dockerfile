@@ -1671,29 +1671,6 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then\
 
 #########################################################################################
 #
-# Layer "awscli"
-#
-#########################################################################################
-FROM build-deps AS awscli
-ARG TARGETARCH
-RUN set -ex; \
-    if [ "${TARGETARCH}" = "amd64" ]; then \
-        TARGETARCH_ALT="x86_64"; \
-        CHECKSUM="c9a9df3770a3ff9259cb469b6179e02829687a464e0824d5c32d378820b53a00"; \
-    elif [ "${TARGETARCH}" = "arm64" ]; then \
-        TARGETARCH_ALT="aarch64"; \
-        CHECKSUM="8181730be7891582b38b028112e81b4899ca817e8c616aad807c9e9d1289223a"; \
-    else \
-        echo "Unsupported architecture: ${TARGETARCH}"; exit 1; \
-    fi; \
-    curl --retry 5 -L "https://awscli.amazonaws.com/awscli-exe-linux-${TARGETARCH_ALT}-2.17.5.zip" -o /tmp/awscliv2.zip; \
-    echo "${CHECKSUM}  /tmp/awscliv2.zip" | sha256sum -c -; \
-    unzip /tmp/awscliv2.zip -d /tmp/awscliv2; \
-    /tmp/awscliv2/aws/install; \
-    rm -rf /tmp/awscliv2.zip /tmp/awscliv2
-
-#########################################################################################
-#
 # Clean up postgres folder before inclusion
 #
 #########################################################################################
@@ -1860,9 +1837,6 @@ RUN mkdir /var/db && useradd -m -d /var/db/postgres postgres && \
     # Create remote extension download directory
     mkdir /usr/local/download_extensions && \
     chown -R postgres:postgres /usr/local/download_extensions
-
-# aws cli is used by fast_import
-COPY --from=awscli /usr/local/aws-cli /usr/local/aws-cli
 
 # pgbouncer and its config
 COPY --from=pgbouncer         /usr/local/pgbouncer/bin/pgbouncer /usr/local/bin/pgbouncer
