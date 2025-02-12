@@ -42,8 +42,8 @@ use utils::lsn::Lsn;
 pub enum BasebackupError {
     #[error("basebackup pageserver error {0:#}")]
     Server(#[from] anyhow::Error),
-    #[error("basebackup client error {0:#}")]
-    Client(#[source] io::Error),
+    #[error("basebackup client error {0:#} when {1}")]
+    Client(#[source] io::Error, &'static str),
 }
 
 /// Create basebackup with non-rel data in it.
@@ -234,7 +234,7 @@ where
         self.ar
             .append(&header, self.buf.as_slice())
             .await
-            .map_err(BasebackupError::Client)?;
+            .map_err(|e| BasebackupError::Client(e, "flush"))?;
 
         self.total_blocks += nblocks;
         debug!("Added to basebackup slru {} relsize {}", segname, nblocks);
@@ -273,9 +273,9 @@ where
         for dir in subdirs.iter() {
             let header = new_tar_header_dir(dir)?;
             self.ar
-                .append(&header, &mut io::empty())
+                .append(&header, io::empty())
                 .await
-                .context("could not add directory to basebackup tarball")?;
+                .map_err(|e| BasebackupError::Client(e, "send_tarball"))?;
         }
 
         // Send config files.
@@ -286,13 +286,13 @@ where
                 self.ar
                     .append(&header, data)
                     .await
-                    .context("could not add config file to basebackup tarball")?;
+                    .map_err(|e| BasebackupError::Client(e, "send_tarball,pg_hba.conf"))?;
             } else {
                 let header = new_tar_header(filepath, 0)?;
                 self.ar
-                    .append(&header, &mut io::empty())
+                    .append(&header, io::empty())
                     .await
-                    .context("could not add config file to basebackup tarball")?;
+                    .map_err(|e| BasebackupError::Client(e, "send_tarball,add_config_file"))?;
             }
         }
         if !lazy_slru_download {
@@ -406,7 +406,7 @@ where
             self.ar
                 .append(&header, &*content)
                 .await
-                .context("could not add aux file to basebackup tarball")?;
+                .map_err(|e| BasebackupError::Client(e, "send_tarball,add_aux_file"))?;
         }
 
         if min_restart_lsn != Lsn::MAX {
@@ -419,7 +419,7 @@ where
             self.ar
                 .append(&header, &data[..])
                 .await
-                .context("could not add restart.lsn file to basebackup tarball")?;
+                .map_err(|e| BasebackupError::Client(e, "send_tarball,restart.lsn"))?;
         }
         for xid in self
             .timeline
@@ -451,9 +451,9 @@ where
             let crc32 = crc32c::crc32c(&content);
             content.extend_from_slice(&crc32.to_le_bytes());
             let header = new_tar_header("pg_logical/replorigin_checkpoint", content.len() as u64)?;
-            self.ar.append(&header, &*content).await.context(
-                "could not add pg_logical/replorigin_checkpoint file to basebackup tarball",
-            )?;
+            self.ar.append(&header, &*content).await.map_err(|e| {
+                BasebackupError::Client(e, "send_tarball,pg_logical/replorigin_checkpoint")
+            })?;
         }
 
         fail_point!("basebackup-before-control-file", |_| {
@@ -464,7 +464,10 @@ where
 
         // Generate pg_control and bootstrap WAL segment.
         self.add_pgcontrol_file().await?;
-        self.ar.finish().await.map_err(BasebackupError::Client)?;
+        self.ar
+            .finish()
+            .await
+            .map_err(|e| BasebackupError::Client(e, "send_tarball,finish"))?;
         debug!("all tarred up!");
         Ok(())
     }
@@ -482,9 +485,9 @@ where
             let file_name = dst.to_segfile_name(0);
             let header = new_tar_header(&file_name, 0)?;
             self.ar
-                .append(&header, &mut io::empty())
+                .append(&header, io::empty())
                 .await
-                .map_err(BasebackupError::Client)?;
+                .map_err(|e| BasebackupError::Client(e, "add_rel,empty"))?;
             return Ok(());
         }
 
@@ -515,7 +518,7 @@ where
             self.ar
                 .append(&header, segment_data.as_slice())
                 .await
-                .map_err(BasebackupError::Client)?;
+                .map_err(|e| BasebackupError::Client(e, "add_rel,segment"))?;
 
             seg += 1;
             startblk = endblk;
@@ -566,7 +569,7 @@ where
             self.ar
                 .append(&header, pg_version_str.as_bytes())
                 .await
-                .map_err(BasebackupError::Client)?;
+                .map_err(|e| BasebackupError::Client(e, "add_dbdir,PG_VERSION"))?;
 
             info!("timeline.pg_version {}", self.timeline.pg_version);
 
@@ -576,7 +579,7 @@ where
                 self.ar
                     .append(&header, &img[..])
                     .await
-                    .map_err(BasebackupError::Client)?;
+                    .map_err(|e| BasebackupError::Client(e, "add_dbdir,global/pg_filenode.map"))?;
             } else {
                 warn!("global/pg_filenode.map is missing");
             }
@@ -612,9 +615,9 @@ where
             let path = format!("base/{}", dbnode);
             let header = new_tar_header_dir(&path)?;
             self.ar
-                .append(&header, &mut io::empty())
+                .append(&header, io::empty())
                 .await
-                .map_err(BasebackupError::Client)?;
+                .map_err(|e| BasebackupError::Client(e, "add_dbdir,base"))?;
 
             if let Some(img) = relmap_img {
                 let dst_path = format!("base/{}/PG_VERSION", dbnode);
@@ -627,14 +630,14 @@ where
                 self.ar
                     .append(&header, pg_version_str.as_bytes())
                     .await
-                    .map_err(BasebackupError::Client)?;
+                    .map_err(|e| BasebackupError::Client(e, "add_dbdir,base/PG_VERSION"))?;
 
                 let relmap_path = format!("base/{}/pg_filenode.map", dbnode);
                 let header = new_tar_header(&relmap_path, img.len() as u64)?;
                 self.ar
                     .append(&header, &img[..])
                     .await
-                    .map_err(BasebackupError::Client)?;
+                    .map_err(|e| BasebackupError::Client(e, "add_dbdir,base/pg_filenode.map"))?;
             }
         };
         Ok(())
@@ -663,7 +666,7 @@ where
         self.ar
             .append(&header, &buf[..])
             .await
-            .map_err(BasebackupError::Client)?;
+            .map_err(|e| BasebackupError::Client(e, "add_twophase_file"))?;
 
         Ok(())
     }
@@ -693,7 +696,7 @@ where
                 zenith_signal.as_bytes(),
             )
             .await
-            .map_err(BasebackupError::Client)?;
+            .map_err(|e| BasebackupError::Client(e, "add_pgcontrol_file,zenith.signal"))?;
 
         let checkpoint_bytes = self
             .timeline
@@ -718,7 +721,7 @@ where
         self.ar
             .append(&header, &pg_control_bytes[..])
             .await
-            .map_err(BasebackupError::Client)?;
+            .map_err(|e| BasebackupError::Client(e, "add_pgcontrol_file,pg_control"))?;
 
         //send wal segment
         let segno = self.lsn.segment_number(WAL_SEGMENT_SIZE);
@@ -742,7 +745,7 @@ where
         self.ar
             .append(&header, &wal_seg[..])
             .await
-            .map_err(BasebackupError::Client)?;
+            .map_err(|e| BasebackupError::Client(e, "add_pgcontrol_file,wal_segment"))?;
         Ok(())
     }
 }
