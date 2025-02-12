@@ -277,6 +277,8 @@ tokio-postgres = { git = "https://github.com/neondatabase/rust-postgres.git", br
 #
 # NB: we also enable frame pointers for improved profiling, see .cargo/config.toml.
 debug = true
+lto = true
+codegen-units = 1
 
 # disable debug symbols for all packages except this one to decrease binaries size
 [profile.release.package."*"]
