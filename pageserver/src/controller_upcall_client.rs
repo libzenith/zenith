@@ -49,13 +49,8 @@ pub trait ControlPlaneGenerationsApi {
 }
 
 impl ControllerUpcallClient {
-    /// A None return value indicates that the input `conf` object does not have control
-    /// plane API enabled.
-    pub fn new(conf: &'static PageServerConf, cancel: &CancellationToken) -> Option<Self> {
-        let mut url = match conf.control_plane_api.as_ref() {
-            Some(u) => u.clone(),
-            None => return None,
-        };
+    pub fn new(conf: &'static PageServerConf, cancel: &CancellationToken) -> Self {
+        let mut url = conf.control_plane_api.clone();
 
         if let Ok(mut segs) = url.path_segments_mut() {
             // This ensures that `url` ends with a slash if it doesn't already.
@@ -74,12 +69,12 @@ impl ControllerUpcallClient {
             client = client.default_headers(headers);
         }
 
-        Some(Self {
+        Self {
             http_client: client.build().expect("Failed to construct HTTP client"),
             base_url: url,
             node_id: conf.id,
             cancel: cancel.clone(),
-        })
+        }
     }
 
     async fn retry_http_forever<R, T>(

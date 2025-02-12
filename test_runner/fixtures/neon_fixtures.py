@@ -1084,8 +1084,7 @@ class NeonEnv:
             "pageservers": [],
         }
 
-        if self.control_plane_api is not None:
-            cfg["control_plane_api"] = self.control_plane_api
+        cfg["control_plane_api"] = self.control_plane_api
 
         if self.control_plane_compute_hook_api is not None:
             cfg["control_plane_compute_hook_api"] = self.control_plane_compute_hook_api

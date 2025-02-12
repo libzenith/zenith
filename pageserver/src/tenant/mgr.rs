@@ -346,7 +346,9 @@ async fn init_load_generations(
             "Emergency mode!  Tenants will be attached unsafely using their last known generation"
         );
         emergency_generations(tenant_confs)
-    } else if let Some(client) = ControllerUpcallClient::new(conf, cancel) {
+    } else {
+        let client = ControllerUpcallClient::new(conf, cancel);
+
         info!("Calling {} API to re-attach tenants", client.base_url());
         // If we are configured to use the control plane API, then it is the source of truth for what tenants to load.
         match client.re_attach(conf).await {
@@ -360,9 +362,6 @@ async fn init_load_generations(
                 anyhow::bail!("Shut down while waiting for control plane re-attach response")
             }
         }
-    } else {
-        info!("Control plane API not configured, tenant generations are disabled");
-        return Ok(None);
     };
 
     // The deletion queue needs to know about the startup attachment state to decide which (if any) stored
@@ -1139,17 +1138,8 @@ impl TenantManager {
                 // Testing hack: if we are configured with no control plane, then drop the generation
                 // from upserts.  This enables creating generation-less tenants even though neon_local
                 // always uses generations when calling the location conf API.
-                let attached_conf = if cfg!(feature = "testing") {
-                    let mut conf = AttachedTenantConf::try_from(new_location_config)
-                        .map_err(UpsertLocationError::BadRequest)?;
-                    if self.conf.control_plane_api.is_none() {
-                        conf.location.generation = Generation::none();
-                    }
-                    conf
-                } else {
-                    AttachedTenantConf::try_from(new_location_config)
-                        .map_err(UpsertLocationError::BadRequest)?
-                };
+                let attached_conf = AttachedTenantConf::try_from(new_location_config)
+                    .map_err(UpsertLocationError::BadRequest)?;
 
                 let tenant = tenant_spawn(
                     self.conf,

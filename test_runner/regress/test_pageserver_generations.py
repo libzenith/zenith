@@ -3,7 +3,7 @@
 Tests in this module exercise the pageserver's behavior around generation numbers,
 as defined in docs/rfcs/025-generation-numbers.md.  Briefly, the behaviors we require
 of the pageserver are:
-- Do not start a tenant without a generation number if control_plane_api is set
+- Do not start a tenant without a generation number
 - Remote objects must be suffixed with generation
 - Deletions may only be executed after validating generation
 - Updates to remote_consistent_lsn may only be made visible after validating generation
