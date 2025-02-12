@@ -1,6 +1,7 @@
 //! Structs representing the JSON formats used in the compute_ctl's HTTP API.
 use crate::{
     privilege::Privilege,
+    responses::ComputeCtlConfig,
     spec::{ComputeSpec, ExtVersion, PgIdent},
 };
 use serde::Deserialize;
@@ -13,6 +14,7 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 pub struct ConfigurationRequest {
     pub spec: ComputeSpec,
+    pub compute_ctl_config: ComputeCtlConfig,
 }
 
 #[derive(Deserialize, Debug)]

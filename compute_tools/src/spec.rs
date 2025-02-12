@@ -11,7 +11,9 @@ use crate::migration::MigrationRunner;
 use crate::params::PG_HBA_ALL_MD5;
 use crate::pg_helpers::*;
 
-use compute_api::responses::{ControlPlaneComputeStatus, ControlPlaneSpecResponse};
+use compute_api::responses::{
+    ComputeCtlConfig, ControlPlaneComputeStatus, ControlPlaneSpecResponse,
+};
 use compute_api::spec::ComputeSpec;
 
 // Do control plane request and return response if any. In case of error it
@@ -73,14 +75,13 @@ fn do_control_plane_request(
 pub fn get_spec_from_control_plane(
     base_uri: &str,
     compute_id: &str,
-) -> Result<Option<ComputeSpec>> {
+) -> Result<(Option<ComputeSpec>, ComputeCtlConfig)> {
     let cp_uri = format!("{base_uri}/compute/api/v2/computes/{compute_id}/spec");
     let jwt: String = match std::env::var("NEON_CONTROL_PLANE_TOKEN") {
         Ok(v) => v,
         Err(_) => "".to_string(),
     };
     let mut attempt = 1;
-    let mut spec: Result<Option<ComputeSpec>> = Ok(None);
 
     info!("getting spec from control plane: {}", cp_uri);
 
@@ -90,7 +91,7 @@ pub fn get_spec_from_control_plane(
     // - no spec for compute yet (Empty state) -> return Ok(None)
     // - got spec -> return Ok(Some(spec))
     while attempt < 4 {
-        spec = match do_control_plane_request(&cp_uri, &jwt) {
+        let result = match do_control_plane_request(&cp_uri, &jwt) {
             Ok(spec_resp) => {
                 CPLANE_REQUESTS_TOTAL
                     .with_label_values(&[
@@ -99,10 +100,10 @@ pub fn get_spec_from_control_plane(
                     ])
                     .inc();
                 match spec_resp.status {
-                    ControlPlaneComputeStatus::Empty => Ok(None),
+                    ControlPlaneComputeStatus::Empty => Ok((None, spec_resp.compute_ctl_config)),
                     ControlPlaneComputeStatus::Attached => {
                         if let Some(spec) = spec_resp.spec {
-                            Ok(Some(spec))
+                            Ok((Some(spec), spec_resp.compute_ctl_config))
                         } else {
                             bail!("compute is attached, but spec is empty")
                         }
@@ -121,10 +122,10 @@ pub fn get_spec_from_control_plane(
             }
         };
 
-        if let Err(e) = &spec {
+        if let Err(e) = &result {
             error!("attempt {} to get spec failed with: {}", attempt, e);
         } else {
-            return spec;
+            return result;
         }
 
         attempt += 1;
@@ -132,7 +133,9 @@ pub fn get_spec_from_control_plane(
     }
 
     // All attempts failed, return error.
-    spec
+    Err(anyhow::anyhow!(
+        "Exhausted all attempts to retrieve the spec from the control plane"
+    ))
 }
 
 /// Check `pg_hba.conf` and update if needed to allow external connections.
