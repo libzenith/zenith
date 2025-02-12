@@ -23,9 +23,11 @@ runs:
 
     - name: Set variables
       shell: bash -euxo pipefail {0}
+      env:
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPORT_DIR: ${{ inputs.report-dir }}
       run: |
-        PR_NUMBER=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH" || true)
-        if [ "${PR_NUMBER}" != "null" ]; then
+        if [ -n "${PR_NUMBER}" ]; then
           BRANCH_OR_PR=pr-${PR_NUMBER}
         elif [ "${GITHUB_REF_NAME}" = "main" ] || [ "${GITHUB_REF_NAME}" = "release" ] || \
              [ "${GITHUB_REF_NAME}" = "release-proxy" ] || [ "${GITHUB_REF_NAME}" = "release-compute" ]; then
@@ -37,8 +39,6 @@ runs:
 
         echo "BRANCH_OR_PR=${BRANCH_OR_PR}" >> $GITHUB_ENV
         echo "REPORT_DIR=${REPORT_DIR}"     >> $GITHUB_ENV
-      env:
-        REPORT_DIR: ${{ inputs.report-dir }}
 
     - uses: aws-actions/configure-aws-credentials@v4
       if: ${{ !cancelled() }}

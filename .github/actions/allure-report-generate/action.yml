@@ -43,9 +43,11 @@ runs:
     #
     - name: Set variables
       shell: bash -euxo pipefail {0}
+      env:
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        BUCKET: neon-github-public-dev
       run: |
-        PR_NUMBER=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH" || true)
-        if [ "${PR_NUMBER}" != "null" ]; then
+        if [ -n "${PR_NUMBER}" ]; then
           BRANCH_OR_PR=pr-${PR_NUMBER}
         elif [ "${GITHUB_REF_NAME}" = "main" ] || [ "${GITHUB_REF_NAME}" = "release" ] || \
              [ "${GITHUB_REF_NAME}" = "release-proxy" ] || [ "${GITHUB_REF_NAME}" = "release-compute" ]; then
@@ -64,8 +66,6 @@ runs:
         echo "LOCK_FILE=${LOCK_FILE}"       >> $GITHUB_ENV
         echo "WORKDIR=${WORKDIR}"           >> $GITHUB_ENV
         echo "BUCKET=${BUCKET}"             >> $GITHUB_ENV
-      env:
-        BUCKET: neon-github-public-dev
 
     # TODO: We can replace with a special docker image with Java and Allure pre-installed
     - uses: actions/setup-java@v4
