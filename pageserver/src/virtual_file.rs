@@ -29,6 +29,7 @@ use std::io::{Error, ErrorKind, Seek, SeekFrom};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt;
 use tokio_epoll_uring::{BoundedBuf, IoBuf, IoBufMut, Slice};
+use utils::critical;
 
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -496,7 +497,7 @@ pub(crate) fn is_fatal_io_error(e: &std::io::Error) -> bool {
 /// bad storage or bad configuration, and we can't fix that from inside
 /// a running process.
 pub(crate) fn on_fatal_io_error(e: &std::io::Error, context: &str) -> ! {
-    tracing::error!("Fatal I/O error: {e}: {context})");
+    critical!("Fatal I/O error: {e}: {context})");
     std::process::abort();
 }
 
@@ -947,13 +948,18 @@ impl VirtualFileInner {
     where
         Buf: tokio_epoll_uring::IoBufMut + Send,
     {
-        let file_guard = match self.lock_file().await {
+        let file_guard = match self
+            .lock_file()
+            .await
+            .maybe_fatal_err("lock_file inside VirtualFileInner::read_at")
+        {
             Ok(file_guard) => file_guard,
             Err(e) => return (buf, Err(e)),
         };
 
         observe_duration!(StorageIoOperation::Read, {
             let ((_file_guard, buf), res) = io_engine::get().read_at(file_guard, offset, buf).await;
+            let res = res.maybe_fatal_err("io_engine read_at inside VirtualFileInner::read_at");
             if let Ok(size) = res {
                 STORAGE_IO_SIZE
                     .with_label_values(&[
