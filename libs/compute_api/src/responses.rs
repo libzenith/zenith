@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{
     privilege::Privilege,
-    spec::{ComputeSpec, Database, ExtVersion, PgIdent, Role},
+    spec::{Database, ExtVersion, PgIdent, Role},
 };
 
 #[derive(Serialize, Debug, Deserialize)]
@@ -133,26 +133,6 @@ pub struct ComputeMetrics {
 pub struct CatalogObjects {
     pub roles: Vec<Role>,
     pub databases: Vec<Database>,
-}
-
-/// Response of the `/computes/{compute_id}/spec` control-plane API.
-/// This is not actually a compute API response, so consider moving
-/// to a different place.
-#[derive(Deserialize, Debug)]
-pub struct ControlPlaneSpecResponse {
-    pub spec: Option<ComputeSpec>,
-    pub status: ControlPlaneComputeStatus,
-}
-
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ControlPlaneComputeStatus {
-    // Compute is known to control-plane, but it's not
-    // yet attached to any timeline / endpoint.
-    Empty,
-    // Compute is attached to some timeline / endpoint and
-    // should be able to start with provided spec.
-    Attached,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

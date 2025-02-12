@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use reqwest::StatusCode;
+use serde::Deserialize;
 use std::fs::File;
 use std::path::Path;
 use tokio_postgres::Client;
@@ -11,8 +12,25 @@ use crate::migration::MigrationRunner;
 use crate::params::PG_HBA_ALL_MD5;
 use crate::pg_helpers::*;
 
-use compute_api::responses::{ControlPlaneComputeStatus, ControlPlaneSpecResponse};
 use compute_api::spec::ComputeSpec;
+
+/// Response of the `/computes/{compute_id}/spec` control-plane API.
+#[derive(Deserialize, Debug)]
+pub struct ControlPlaneSpecResponse {
+    pub spec: Option<ComputeSpec>,
+    pub status: ControlPlaneComputeStatus,
+}
+
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlPlaneComputeStatus {
+    // Compute is known to control-plane, but it's not
+    // yet attached to any timeline / endpoint.
+    Empty,
+    // Compute is attached to some timeline / endpoint and
+    // should be able to start with provided spec.
+    Attached,
+}
 
 // Do control plane request and return response if any. In case of error it
 // returns a bool flag indicating whether it makes sense to retry the request
