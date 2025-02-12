@@ -280,6 +280,22 @@ impl PageserverClient {
         )
     }
 
+    pub(crate) async fn timeline_download_heatmap_layers(
+        &self,
+        tenant_shard_id: TenantShardId,
+        timeline_id: TimelineId,
+        concurrency: Option<usize>,
+    ) -> Result<()> {
+        measured_request!(
+            "download_heatmap_layers",
+            crate::metrics::Method::Post,
+            &self.node_id_label,
+            self.inner
+                .timeline_download_heatmap_layers(tenant_shard_id, timeline_id, concurrency)
+                .await
+        )
+    }
+
     pub(crate) async fn get_utilization(&self) -> Result<PageserverUtilization> {
         measured_request!(
             "utilization",

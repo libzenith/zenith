@@ -117,6 +117,10 @@ impl TenantShardId {
         )
     }
 
+    pub fn range(&self) -> RangeInclusive<Self> {
+        RangeInclusive::new(*self, *self)
+    }
+
     pub fn shard_slug(&self) -> impl std::fmt::Display + '_ {
         ShardSlug(self)
     }

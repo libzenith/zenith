@@ -156,6 +156,7 @@ enum TenantOperations {
     TimelineDetachAncestor,
     TimelineGcBlockUnblock,
     DropDetached,
+    DownloadHeatmapLayers,
 }
 
 #[derive(Clone, strum_macros::Display)]
@@ -3632,6 +3633,60 @@ impl Service {
             .await
         })
         .await??;
+        Ok(())
+    }
+
+    pub(crate) async fn tenant_timeline_download_heatmap_layers(
+        &self,
+        tenant_shard_id: TenantShardId,
+        timeline_id: TimelineId,
+        concurrency: Option<usize>,
+    ) -> Result<(), ApiError> {
+        let _tenant_lock = trace_shared_lock(
+            &self.tenant_op_locks,
+            tenant_shard_id.tenant_id,
+            TenantOperations::DownloadHeatmapLayers,
+        )
+        .await;
+
+        let targets = {
+            let locked = self.inner.read().unwrap();
+            let mut targets = Vec::new();
+
+            // If the request got an unsharded tenant id, then apply
+            // the operation to all shards. Otherwise, apply it to a specific shard.
+            let shards_range = if tenant_shard_id.is_unsharded() {
+                TenantShardId::tenant_range(tenant_shard_id.tenant_id)
+            } else {
+                tenant_shard_id.range()
+            };
+
+            for (tenant_shard_id, shard) in locked.tenants.range(shards_range) {
+                if let Some(node_id) = shard.intent.get_attached() {
+                    let node = locked
+                        .nodes
+                        .get(node_id)
+                        .expect("Pageservers may not be deleted while referenced");
+
+                    targets.push((*tenant_shard_id, node.clone()));
+                }
+            }
+            targets
+        };
+
+        for (tenant_shard_id, node) in targets {
+            let client = PageserverClient::new(
+                node.get_id(),
+                node.base_url(),
+                self.config.jwt_token.as_deref(),
+            );
+
+            client
+                .timeline_download_heatmap_layers(tenant_shard_id, timeline_id, concurrency)
+                .await
+                .ok();
+        }
+
         Ok(())
     }
 
