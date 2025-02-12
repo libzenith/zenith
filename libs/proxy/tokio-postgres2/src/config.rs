@@ -9,6 +9,7 @@ use crate::{Client, Connection, Error};
 use postgres_protocol2::message::frontend::StartupMessageParams;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::net::IpAddr;
 use std::str;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -67,6 +68,7 @@ pub enum AuthKeys {
 /// Connection configuration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Config {
+    pub(crate) host_addr: Option<IpAddr>,
     pub(crate) host: Host,
     pub(crate) port: u16,
 
@@ -85,6 +87,7 @@ impl Config {
     /// Creates a new configuration.
     pub fn new(host: String, port: u16) -> Config {
         Config {
+            host_addr: None,
             host: Host::Tcp(host),
             port,
             password: None,
@@ -163,6 +166,15 @@ impl Config {
 
         self.server_params.insert(name, value);
         self
+    }
+
+    pub fn set_host_addr(&mut self, addr: IpAddr) -> &mut Config {
+        self.host_addr = Some(addr);
+        self
+    }
+
+    pub fn get_host_addr(&self) -> Option<IpAddr> {
+        self.host_addr
     }
 
     /// Sets the SSL configuration.

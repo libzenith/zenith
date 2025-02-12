@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use postgres_protocol::message::backend::NoticeResponseBody;
 use pq_proto::StartupMessageParams;
 use rustls::pki_types::InvalidDnsNameError;
 use thiserror::Error;
-use tokio::net::TcpStream;
+use tokio::net::{lookup_host, TcpStream};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::backend::ComputeUserInfo;
@@ -180,21 +181,19 @@ impl ConnCfg {
         use postgres_client::config::Host;
 
         // wrap TcpStream::connect with timeout
-        let connect_with_timeout = |host, port| {
-            tokio::time::timeout(timeout, TcpStream::connect((host, port))).map(
-                move |res| match res {
-                    Ok(tcpstream_connect_res) => tcpstream_connect_res,
-                    Err(_) => Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("exceeded connection timeout {timeout:?}"),
-                    )),
-                },
-            )
+        let connect_with_timeout = |addrs| {
+            tokio::time::timeout(timeout, TcpStream::connect(addrs)).map(move |res| match res {
+                Ok(tcpstream_connect_res) => tcpstream_connect_res,
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("exceeded connection timeout {timeout:?}"),
+                )),
+            })
         };
 
-        let connect_once = |host, port| {
-            debug!("trying to connect to compute node at {host}:{port}");
-            connect_with_timeout(host, port).and_then(|stream| async {
+        let connect_once = |addrs| {
+            debug!("trying to connect to compute node at {addrs:?}");
+            connect_with_timeout(addrs).and_then(|stream| async {
                 let socket_addr = stream.peer_addr()?;
                 let socket = socket2::SockRef::from(&stream);
                 // Disable Nagle's algorithm to not introduce latency between
@@ -216,7 +215,12 @@ impl ConnCfg {
             Host::Tcp(host) => host.as_str(),
         };
 
-        match connect_once(host, port).await {
+        let addrs = match self.0.get_host_addr() {
+            Some(addr) => vec![SocketAddr::new(addr, port)],
+            None => lookup_host((host, port)).await?.collect(),
+        };
+
+        match connect_once(&*addrs).await {
             Ok((sockaddr, stream)) => Ok((sockaddr, stream, host)),
             Err(err) => {
                 warn!("couldn't connect to compute node at {host}:{port}: {err}");

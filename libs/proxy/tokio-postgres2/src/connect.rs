@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use crate::client::SocketConfig;
 use crate::codec::BackendMessage;
 use crate::config::Host;
@@ -24,13 +26,14 @@ where
         .make_tls_connect(hostname)
         .map_err(|e| Error::tls(e.into()))?;
 
-    match connect_once(&config.host, config.port, tls, config).await {
+    match connect_once(config.host_addr, &config.host, config.port, tls, config).await {
         Ok((client, connection)) => Ok((client, connection)),
         Err(e) => Err(e),
     }
 }
 
 async fn connect_once<T>(
+    host_addr: Option<IpAddr>,
     host: &Host,
     port: u16,
     tls: T,
@@ -39,7 +42,7 @@ async fn connect_once<T>(
 where
     T: TlsConnect<TcpStream>,
 {
-    let socket = connect_socket(host, port, config.connect_timeout).await?;
+    let socket = connect_socket(host_addr, host, port, config.connect_timeout).await?;
     let RawConnection {
         stream,
         parameters,
@@ -49,6 +52,7 @@ where
     } = connect_raw(socket, tls, config).await?;
 
     let socket_config = SocketConfig {
+        host_addr,
         host: host.clone(),
         port,
         connect_timeout: config.connect_timeout,

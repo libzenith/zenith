@@ -2,6 +2,7 @@ use std::fmt::{self, Display};
 
 use measured::FixedCardinalityLabel;
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 use crate::auth::IpPattern;
 use crate::intern::{AccountIdInt, BranchIdInt, EndpointIdInt, ProjectIdInt, RoleNameInt};
@@ -312,6 +313,9 @@ pub(crate) struct MetricsAuxInfo {
     pub(crate) endpoint_id: EndpointIdInt,
     pub(crate) project_id: ProjectIdInt,
     pub(crate) branch_id: BranchIdInt,
+    // note: we don't use interned strings for compute IDs.
+    // they churn too quickly and we have no way to clean up interned strings.
+    pub(crate) compute_id: SmolStr,
     #[serde(default)]
     pub(crate) cold_start_info: ColdStartInfo,
 }
@@ -378,6 +382,7 @@ mod tests {
             "endpoint_id": "endpoint",
             "project_id": "project",
             "branch_id": "branch",
+            "compute_id": "compute",
             "cold_start_info": "unknown",
         })
     }

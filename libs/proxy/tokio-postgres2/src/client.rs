@@ -21,6 +21,7 @@ use postgres_protocol2::message::{backend::Message, frontend};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
@@ -140,6 +141,7 @@ impl InnerClient {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SocketConfig {
+    pub host_addr: Option<IpAddr>,
     pub host: Host,
     pub port: u16,
     pub connect_timeout: Option<Duration>,

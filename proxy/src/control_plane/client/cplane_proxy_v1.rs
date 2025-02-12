@@ -1,5 +1,7 @@
 //! Production console backend.
 
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -274,11 +276,25 @@ impl NeonControlPlaneClient {
                 Some(x) => x,
             };
 
+            let host_addr = IpAddr::from_str(host).ok();
+
+            let host = if host_addr.is_some() {
+                format!("{}.default.svc.cluster.local", body.aux.compute_id)
+            } else {
+                host.to_owned()
+            };
+
             // Don't set anything but host and port! This config will be cached.
             // We'll set username and such later using the startup message.
             // TODO: add more type safety (in progress).
-            let mut config = compute::ConnCfg::new(host.to_owned(), port);
-            config.ssl_mode(SslMode::Disable); // TLS is not configured on compute nodes.
+            let mut config = compute::ConnCfg::new(host, port);
+
+            if let Some(addr) = host_addr {
+                config.set_host_addr(addr);
+            }
+
+            // TLS is not yet configured on compute nodes, but it will be soon.
+            config.ssl_mode(SslMode::Prefer);
 
             let node = NodeInfo {
                 config,

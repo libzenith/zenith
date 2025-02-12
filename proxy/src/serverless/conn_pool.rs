@@ -221,6 +221,7 @@ mod tests {
                 endpoint_id: (&EndpointId::from("endpoint")).into(),
                 project_id: (&ProjectId::from("project")).into(),
                 branch_id: (&BranchId::from("branch")).into(),
+                compute_id: "compute".into(),
                 cold_start_info: crate::control_plane::messages::ColdStartInfo::Warm,
             },
             conn_id: uuid::Uuid::new_v4(),

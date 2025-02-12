@@ -35,6 +35,7 @@ impl LocalBackend {
                     endpoint_id: EndpointIdTag::get_interner().get_or_intern("local"),
                     project_id: ProjectIdTag::get_interner().get_or_intern("local"),
                     branch_id: BranchIdTag::get_interner().get_or_intern("local"),
+                    compute_id: "local".into(),
                     cold_start_info: ColdStartInfo::WarmCached,
                 },
             },
