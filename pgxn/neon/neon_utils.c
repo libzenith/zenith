@@ -52,6 +52,26 @@ HexDecodeString(uint8 *result, char *input, int nbytes)
 }
 
 /* --------------------------------
+ *		pq_getmsgint16	- get a binary 2-byte int from a message buffer
+ * --------------------------------
+ */
+uint16
+pq_getmsgint16(StringInfo msg)
+{
+	return pq_getmsgint(msg, 2);
+}
+
+/* --------------------------------
+ *		pq_getmsgint32	- get a binary 4-byte int from a message buffer
+ * --------------------------------
+ */
+uint32
+pq_getmsgint32(StringInfo msg)
+{
+	return pq_getmsgint(msg, 4);
+}
+
+/* --------------------------------
  *		pq_getmsgint32_le	- get a binary 4-byte int from a message buffer in native (LE) order
  * --------------------------------
  */

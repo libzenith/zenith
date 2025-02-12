@@ -38,14 +38,12 @@ impl Display for SafekeeperId {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(transparent)]
 pub struct MemberSet {
-    pub members: Vec<SafekeeperId>,
+    pub m: Vec<SafekeeperId>,
 }
 
 impl MemberSet {
     pub fn empty() -> Self {
-        MemberSet {
-            members: Vec::new(),
-        }
+        MemberSet { m: Vec::new() }
     }
 
     pub fn new(members: Vec<SafekeeperId>) -> anyhow::Result<Self> {
@@ -53,11 +51,11 @@ impl MemberSet {
         if hs.len() != members.len() {
             bail!("duplicate safekeeper id in the set {:?}", members);
         }
-        Ok(MemberSet { members })
+        Ok(MemberSet { m: members })
     }
 
     pub fn contains(&self, sk: &SafekeeperId) -> bool {
-        self.members.iter().any(|m| m.id == sk.id)
+        self.m.iter().any(|m| m.id == sk.id)
     }
 
     pub fn add(&mut self, sk: SafekeeperId) -> anyhow::Result<()> {
@@ -67,7 +65,7 @@ impl MemberSet {
                 sk.id, self
             ));
         }
-        self.members.push(sk);
+        self.m.push(sk);
         Ok(())
     }
 }
@@ -75,11 +73,7 @@ impl MemberSet {
 impl Display for MemberSet {
     /// Display as a comma separated list of members.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let sks_str = self
-            .members
-            .iter()
-            .map(|m| m.to_string())
-            .collect::<Vec<_>>();
+        let sks_str = self.m.iter().map(|sk| sk.to_string()).collect::<Vec<_>>();
         write!(f, "({})", sks_str.join(", "))
     }
 }

@@ -281,7 +281,7 @@ impl SafekeeperPostgresHandler {
             tokio::select! {
                 // todo: add read|write .context to these errors
                 r = network_reader.run(msg_tx, msg_rx, reply_tx, timeline, next_msg) => r,
-                r = network_write(pgb, reply_rx, pageserver_feedback_rx) => r,
+                r = network_write(pgb, reply_rx, pageserver_feedback_rx, proto_version) => r,
                 _ = timeline_cancel.cancelled() => {
                     return Err(CopyStreamHandlerEnd::Cancelled);
                 }
@@ -342,8 +342,8 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> NetworkReader<'_, IO> {
         let tli = match next_msg {
             ProposerAcceptorMessage::Greeting(ref greeting) => {
                 info!(
-                    "start handshake with walproposer {} sysid {} timeline {}",
-                    self.peer_addr, greeting.system_id, greeting.tli,
+                    "start handshake with walproposer {} sysid {}",
+                    self.peer_addr, greeting.system_id,
                 );
                 let server_info = ServerInfo {
                     pg_version: greeting.pg_version,
@@ -459,6 +459,7 @@ async fn network_write<IO: AsyncRead + AsyncWrite + Unpin>(
     pgb_writer: &mut PostgresBackend<IO>,
     mut reply_rx: Receiver<AcceptorProposerMessage>,
     mut pageserver_feedback_rx: tokio::sync::broadcast::Receiver<PageserverFeedback>,
+    proto_version: u32,
 ) -> Result<(), CopyStreamHandlerEnd> {
     let mut buf = BytesMut::with_capacity(128);
 
@@ -496,7 +497,7 @@ async fn network_write<IO: AsyncRead + AsyncWrite + Unpin>(
         };
 
         buf.clear();
-        msg.serialize(&mut buf)?;
+        msg.serialize(&mut buf, proto_version)?;
         pgb_writer.write_message(&BeMessage::CopyData(&buf)).await?;
     }
 }

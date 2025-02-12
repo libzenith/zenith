@@ -215,6 +215,7 @@ impl Wrapper {
             syncSafekeepers: config.sync_safekeepers,
             systemId: 0,
             pgTimeline: 1,
+            proto_version: 3,
             callback_data,
         };
         let c_config = Box::into_raw(Box::new(c_config));
@@ -276,6 +277,7 @@ mod tests {
     use core::panic;
     use std::{
         cell::Cell,
+        ffi::CString,
         sync::{atomic::AtomicUsize, mpsc::sync_channel},
     };
 
@@ -496,57 +498,64 @@ mod tests {
         // Messages definitions are at walproposer.h
         // xxx: it would be better to extract them from safekeeper crate and
         // use serialization/deserialization here.
-        let greeting_tag = (b'g' as u64).to_ne_bytes();
-        let proto_version = 2_u32.to_ne_bytes();
-        let pg_version: [u8; 4] = PG_VERSION_NUM.to_ne_bytes();
-        let proposer_id = [0; 16];
-        let system_id = 0_u64.to_ne_bytes();
-        let tenant_id = ttid.tenant_id.as_arr();
-        let timeline_id = ttid.timeline_id.as_arr();
-        let pg_tli = 1_u32.to_ne_bytes();
-        let wal_seg_size = 16777216_u32.to_ne_bytes();
+        let greeting_tag = (b'g').to_be_bytes();
+        let tenant_id = CString::new(ttid.tenant_id.to_string())
+            .unwrap()
+            .into_bytes_with_nul();
+        let timeline_id = CString::new(ttid.timeline_id.to_string())
+            .unwrap()
+            .into_bytes_with_nul();
+        let mconf_gen = 0_u32.to_be_bytes();
+        let mconf_members_len = 0_u32.to_be_bytes();
+        let mconf_members_new_len = 0_u32.to_be_bytes();
+        let pg_version: [u8; 4] = PG_VERSION_NUM.to_be_bytes();
+        let system_id = 0_u64.to_be_bytes();
+        let wal_seg_size = 16777216_u32.to_be_bytes();
+
         let proposer_greeting = [
             greeting_tag.as_slice(),
-            proto_version.as_slice(),
-            pg_version.as_slice(),
-            proposer_id.as_slice(),
-            system_id.as_slice(),
             tenant_id.as_slice(),
             timeline_id.as_slice(),
-            pg_tli.as_slice(),
+            mconf_gen.as_slice(),
+            mconf_members_len.as_slice(),
+            mconf_members_new_len.as_slice(),
+            pg_version.as_slice(),
+            system_id.as_slice(),
             wal_seg_size.as_slice(),
         ]
         .concat();
 
-        let voting_tag = (b'v' as u64).to_ne_bytes();
-        let vote_request_term = 3_u64.to_ne_bytes();
-        let proposer_id = [0; 16];
+        let voting_tag = (b'v').to_be_bytes();
+        let vote_request_term = 3_u64.to_be_bytes();
         let vote_request = [
             voting_tag.as_slice(),
+            mconf_gen.as_slice(),
             vote_request_term.as_slice(),
-            proposer_id.as_slice(),
         ]
         .concat();
 
-        let acceptor_greeting_term = 2_u64.to_ne_bytes();
-        let acceptor_greeting_node_id = 1_u64.to_ne_bytes();
+        let acceptor_greeting_term = 2_u64.to_be_bytes();
+        let acceptor_greeting_node_id = 1_u64.to_be_bytes();
         let acceptor_greeting = [
             greeting_tag.as_slice(),
-            acceptor_greeting_term.as_slice(),
             acceptor_greeting_node_id.as_slice(),
+            mconf_gen.as_slice(),
+            mconf_members_len.as_slice(),
+            mconf_members_new_len.as_slice(),
+            acceptor_greeting_term.as_slice(),
         ]
         .concat();
 
-        let vote_response_term = 3_u64.to_ne_bytes();
-        let vote_given = 1_u64.to_ne_bytes();
-        let flush_lsn = 0x539_u64.to_ne_bytes();
-        let truncate_lsn = 0x539_u64.to_ne_bytes();
-        let th_len = 1_u32.to_ne_bytes();
-        let th_term = 2_u64.to_ne_bytes();
-        let th_lsn = 0x539_u64.to_ne_bytes();
-        let timeline_start_lsn = 0x539_u64.to_ne_bytes();
+        let vote_response_term = 3_u64.to_be_bytes();
+        let vote_given = 1_u8.to_be_bytes();
+        let flush_lsn = 0x539_u64.to_be_bytes();
+        let truncate_lsn = 0x539_u64.to_be_bytes();
+        let th_len = 1_u32.to_be_bytes();
+        let th_term = 2_u64.to_be_bytes();
+        let th_lsn = 0x539_u64.to_be_bytes();
         let vote_response = [
             voting_tag.as_slice(),
+            mconf_gen.as_slice(),
             vote_response_term.as_slice(),
             vote_given.as_slice(),
             flush_lsn.as_slice(),
@@ -554,7 +563,6 @@ mod tests {
             th_len.as_slice(),
             th_term.as_slice(),
             th_lsn.as_slice(),
-            timeline_start_lsn.as_slice(),
         ]
         .concat();
 

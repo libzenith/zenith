@@ -8,7 +8,7 @@
 
 use anyhow::Context;
 use postgres_backend::QueryError;
-use safekeeper_api::membership::Configuration;
+use safekeeper_api::membership::{Configuration, INVALID_GENERATION};
 use safekeeper_api::{ServerInfo, Term};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -133,10 +133,10 @@ async fn send_proposer_elected(
     let history = TermHistory(history_entries);
 
     let proposer_elected_request = ProposerAcceptorMessage::Elected(ProposerElected {
+        generation: INVALID_GENERATION,
         term,
         start_streaming_at: lsn,
         term_history: history,
-        timeline_start_lsn: lsn,
     });
 
     tli.process_msg(&proposer_elected_request).await?;
@@ -170,13 +170,12 @@ pub async fn append_logical_message(
 
     let append_request = ProposerAcceptorMessage::AppendRequest(AppendRequest {
         h: AppendRequestHeader {
+            generation: INVALID_GENERATION,
             term: msg.term,
-            term_start_lsn: begin_lsn,
             begin_lsn,
             end_lsn,
             commit_lsn,
             truncate_lsn: msg.truncate_lsn,
-            proposer_uuid: [0u8; 16],
         },
         wal_data,
     });

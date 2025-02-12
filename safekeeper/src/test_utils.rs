@@ -73,10 +73,10 @@ impl Env {
         // Emulate an initial election.
         safekeeper
             .process_msg(&ProposerAcceptorMessage::Elected(ProposerElected {
+                generation: 0,
                 term: 1,
                 start_streaming_at: start_lsn,
                 term_history: TermHistory(vec![(1, start_lsn).into()]),
-                timeline_start_lsn: start_lsn,
             }))
             .await?;
 
@@ -146,13 +146,12 @@ impl Env {
 
             let req = AppendRequest {
                 h: AppendRequestHeader {
+                    generation: 0,
                     term: 1,
-                    term_start_lsn: start_lsn,
                     begin_lsn: lsn,
                     end_lsn: lsn + record.len() as u64,
                     commit_lsn: lsn,
                     truncate_lsn: Lsn(0),
-                    proposer_uuid: [0; 16],
                 },
                 wal_data: record,
             };

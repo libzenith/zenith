@@ -88,13 +88,12 @@ fn bench_process_msg(c: &mut Criterion) {
                 let (lsn, record) = walgen.next().expect("endless WAL");
                 ProposerAcceptorMessage::AppendRequest(AppendRequest {
                     h: AppendRequestHeader {
+                        generation: 0,
                         term: 1,
-                        term_start_lsn: Lsn(0),
                         begin_lsn: lsn,
                         end_lsn: lsn + record.len() as u64,
                         commit_lsn: if commit { lsn } else { Lsn(0) }, // commit previous record
                         truncate_lsn: Lsn(0),
-                        proposer_uuid: [0; 16],
                     },
                     wal_data: record,
                 })
@@ -160,13 +159,12 @@ fn bench_wal_acceptor(c: &mut Criterion) {
                     .take(n)
                     .map(|(lsn, record)| AppendRequest {
                         h: AppendRequestHeader {
+                            generation: 0,
                             term: 1,
-                            term_start_lsn: Lsn(0),
                             begin_lsn: lsn,
                             end_lsn: lsn + record.len() as u64,
                             commit_lsn: Lsn(0),
                             truncate_lsn: Lsn(0),
-                            proposer_uuid: [0; 16],
                         },
                         wal_data: record,
                     })
@@ -262,13 +260,12 @@ fn bench_wal_acceptor_throughput(c: &mut Criterion) {
             runtime.block_on(async {
                 let reqgen = walgen.take(count).map(|(lsn, record)| AppendRequest {
                     h: AppendRequestHeader {
+                        generation: 0,
                         term: 1,
-                        term_start_lsn: Lsn(0),
                         begin_lsn: lsn,
                         end_lsn: lsn + record.len() as u64,
                         commit_lsn: if commit { lsn } else { Lsn(0) }, // commit previous record
                         truncate_lsn: Lsn(0),
-                        proposer_uuid: [0; 16],
                     },
                     wal_data: record,
                 });

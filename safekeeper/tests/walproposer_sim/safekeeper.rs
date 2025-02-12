@@ -15,9 +15,7 @@ use desim::{
 };
 use http::Uri;
 use safekeeper::{
-    safekeeper::{
-        ProposerAcceptorMessage, SafeKeeper, SK_PROTOCOL_VERSION, UNKNOWN_SERVER_VERSION,
-    },
+    safekeeper::{ProposerAcceptorMessage, SafeKeeper, SK_PROTO_VERSION_3, UNKNOWN_SERVER_VERSION},
     state::{TimelinePersistentState, TimelineState},
     timeline::TimelineError,
     wal_storage::Storage,
@@ -287,7 +285,7 @@ impl ConnState {
                 bail!("finished processing START_REPLICATION")
             }
 
-            let msg = ProposerAcceptorMessage::parse(copy_data, SK_PROTOCOL_VERSION)?;
+            let msg = ProposerAcceptorMessage::parse(copy_data, SK_PROTO_VERSION_3)?;
             debug!("got msg: {:?}", msg);
             self.process(msg, global)
         } else {
@@ -403,7 +401,7 @@ impl ConnState {
             // TODO: if this is AppendResponse, fill in proper hot standby feedback and disk consistent lsn
 
             let mut buf = BytesMut::with_capacity(128);
-            reply.serialize(&mut buf)?;
+            reply.serialize(&mut buf, SK_PROTO_VERSION_3)?;
 
             self.tcp.send(AnyMessage::Bytes(buf.into()));
         }

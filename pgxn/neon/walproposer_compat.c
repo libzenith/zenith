@@ -117,14 +117,13 @@ pq_getmsgbytes(StringInfo msg, int datalen)
 }
 
 /* --------------------------------
- *		pq_getmsgstring - get a null-terminated text string (with conversion)
+ *		pq_getmsgrawstring - get a null-terminated text string - NO conversion
  *
- *		May return a pointer directly into the message buffer, or a pointer
- *		to a palloc'd conversion result.
+ *		Returns a pointer directly into the message buffer.
  * --------------------------------
  */
 const char *
-pq_getmsgstring(StringInfo msg)
+pq_getmsgrawstring(StringInfo msg)
 {
 	char	   *str;
 	int			slen;
@@ -155,6 +154,45 @@ pq_getmsgend(StringInfo msg)
 		ExceptionalCondition("invalid msg format", __FILE__, __LINE__);
 }
 
+/* --------------------------------
+ *		pq_sendbytes	- append raw data to a StringInfo buffer
+ * --------------------------------
+ */
+void
+pq_sendbytes(StringInfo buf, const void *data, int datalen)
+{
+	/* use variant that maintains a trailing null-byte, out of caution */
+	appendBinaryStringInfo(buf, data, datalen);
+}
+
+/* --------------------------------
+ *		pq_send_ascii_string	- append a null-terminated text string (without conversion)
+ *
+ * This function intentionally bypasses encoding conversion, instead just
+ * silently replacing any non-7-bit-ASCII characters with question marks.
+ * It is used only when we are having trouble sending an error message to
+ * the client with normal localization and encoding conversion.  The caller
+ * should already have taken measures to ensure the string is just ASCII;
+ * the extra work here is just to make certain we don't send a badly encoded
+ * string to the client (which might or might not be robust about that).
+ *
+ * NB: passed text string must be null-terminated, and so is the data
+ * sent to the frontend.
+ * --------------------------------
+ */
+void
+pq_send_ascii_string(StringInfo buf, const char *str)
+{
+	while (*str)
+	{
+		char		ch = *str++;
+
+		if (IS_HIGHBIT_SET(ch))
+			ch = '?';
+		appendStringInfoCharMacro(buf, ch);
+	}
+	appendStringInfoChar(buf, '\0');
+}
 
 /*
  * Produce a C-string representation of a TimestampTz.

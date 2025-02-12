@@ -539,13 +539,16 @@ def test_recovery_uncommitted(neon_env_builder: NeonEnvBuilder):
     asyncio.run(run_recovery_uncommitted(env))
 
 
-async def run_wal_truncation(env: NeonEnv):
+async def run_wal_truncation(env: NeonEnv, safekeeper_proto_version: int):
     tenant_id = env.initial_tenant
     timeline_id = env.initial_timeline
 
     (sk1, sk2, sk3) = env.safekeepers
 
-    ep = env.endpoints.create_start("main")
+    config_lines = [
+        f"neon.safekeeper_proto_version = {safekeeper_proto_version}",
+    ]
+    ep = env.endpoints.create_start("main", config_lines=config_lines)
     ep.safe_psql("create table t (key int, value text)")
     ep.safe_psql("insert into t select generate_series(1, 100), 'payload'")
 
@@ -572,6 +575,7 @@ async def run_wal_truncation(env: NeonEnv):
     sk2.start()
     ep = env.endpoints.create_start(
         "main",
+        config_lines=config_lines,
     )
     ep.safe_psql("insert into t select generate_series(1, 200), 'payload'")
 
@@ -590,11 +594,13 @@ async def run_wal_truncation(env: NeonEnv):
 
 # Simple deterministic test creating tail of WAL on safekeeper which is
 # truncated when majority without this sk elects walproposer starting earlier.
-def test_wal_truncation(neon_env_builder: NeonEnvBuilder):
+# Test both proto versions until we fully migrate.
+@pytest.mark.parametrize("safekeeper_proto_version", [2, 3])
+def test_wal_truncation(neon_env_builder: NeonEnvBuilder, safekeeper_proto_version: int):
     neon_env_builder.num_safekeepers = 3
     env = neon_env_builder.init_start()
 
-    asyncio.run(run_wal_truncation(env))
+    asyncio.run(run_wal_truncation(env, safekeeper_proto_version))
 
 
 async def run_segment_init_failure(env: NeonEnv):

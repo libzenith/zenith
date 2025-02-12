@@ -7,6 +7,7 @@ use std::{fmt, pin::pin};
 use anyhow::{bail, Context};
 use futures::StreamExt;
 use postgres_protocol::message::backend::ReplicationMessage;
+use safekeeper_api::membership::INVALID_GENERATION;
 use safekeeper_api::models::{PeerInfo, TimelineStatus};
 use safekeeper_api::Term;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -267,7 +268,10 @@ async fn recover(
     );
 
     // Now understand our term history.
-    let vote_request = ProposerAcceptorMessage::VoteRequest(VoteRequest { term: donor.term });
+    let vote_request = ProposerAcceptorMessage::VoteRequest(VoteRequest {
+        generation: INVALID_GENERATION,
+        term: donor.term,
+    });
     let vote_response = match tli
         .process_msg(&vote_request)
         .await
@@ -302,10 +306,10 @@ async fn recover(
 
     // truncate WAL locally
     let pe = ProposerAcceptorMessage::Elected(ProposerElected {
+        generation: INVALID_GENERATION,
         term: donor.term,
         start_streaming_at: last_common_point.lsn,
         term_history: donor_th,
-        timeline_start_lsn: Lsn::INVALID,
     });
     // Successful ProposerElected handling always returns None. If term changed,
     // we'll find out that during the streaming. Note: it is expected to get
@@ -434,13 +438,12 @@ async fn network_io(
         match msg {
             ReplicationMessage::XLogData(xlog_data) => {
                 let ar_hdr = AppendRequestHeader {
+                    generation: INVALID_GENERATION,
                     term: donor.term,
-                    term_start_lsn: Lsn::INVALID, // unused
                     begin_lsn: Lsn(xlog_data.wal_start()),
                     end_lsn: Lsn(xlog_data.wal_start()) + xlog_data.data().len() as u64,
                     commit_lsn: Lsn::INVALID, // do not attempt to advance, peer communication anyway does it
                     truncate_lsn: Lsn::INVALID, // do not attempt to advance
-                    proposer_uuid: [0; 16],
                 };
                 let ar = AppendRequest {
                     h: ar_hdr,

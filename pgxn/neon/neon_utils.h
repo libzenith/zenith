@@ -8,6 +8,8 @@
 #endif
 
 bool		HexDecodeString(uint8 *result, char *input, int nbytes);
+uint16      pq_getmsgint16(StringInfo msg);
+uint32      pq_getmsgint32(StringInfo msg);
 uint32		pq_getmsgint32_le(StringInfo msg);
 uint64		pq_getmsgint64_le(StringInfo msg);
 void		pq_sendint32_le(StringInfo buf, uint32 i);
