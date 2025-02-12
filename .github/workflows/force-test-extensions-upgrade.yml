@@ -1,0 +1,64 @@
+name: Force Test Upgrading of Extension
+on:
+  schedule:
+    # * is a special character in YAML so you have to quote this string
+    #          ┌───────────── minute (0 - 59)
+    #          │ ┌───────────── hour (0 - 23)
+    #          │ │ ┌───────────── day of the month (1 - 31)
+    #          │ │ │ ┌───────────── month (1 - 12 or JAN-DEC)
+    #          │ │ │ │ ┌───────────── day of the week (0 - 6 or SUN-SAT)
+    - cron:  '45 2 * * *' # run once a day, timezone is utc
+  workflow_dispatch: # adds ability to run this manually
+
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
+concurrency:
+  # Allow only one workflow
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write # aws-actions/configure-aws-credentials
+  statuses: write
+  contents: write
+
+jobs:
+  regress:
+    strategy:
+      fail-fast: false
+      matrix:
+        pg-version: [16, 17]
+
+    runs-on: small
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Test extension upgrade
+        timeout-minutes: 20
+        env:
+          NEWTAG: latest
+          OLDTAG: latest
+          FORCE_ALL_UPGRADE_TESTS: true
+        run: ./docker-compose/test_extensions_upgrade.sh
+
+      - name: Print logs and clean up
+        if: always()
+        run: |
+          docker compose --profile test-extensions -f ./docker-compose/docker-compose.yml logs || true
+          docker compose --profile test-extensions -f ./docker-compose/docker-compose.yml down
+
+      - name: Post to the Slack channel
+        if: ${{ github.event.schedule && failure() }}
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: ${{ vars.SLACK_ON_CALL_QA_STAGING_STREAM }}
+          slack-message: |
+            Test upgrading of extensions: ${{ job.status }}
+            <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub Run>
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
