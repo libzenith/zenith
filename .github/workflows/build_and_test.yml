@@ -228,10 +228,10 @@ jobs:
 
   # Keep `benchmarks` job outside of `build-and-test-locally` workflow to make job failures non-blocking
   get-benchmarks-durations:
-    if: github.ref_name == 'main' || contains(github.event.pull_request.labels.*.name, 'run-benchmarks')
+    if: github.ref_name == 'main' || (contains(github.event.pull_request.labels.*.name, 'run-benchmarks') && needs.deploy.result == 'skipped')
     outputs:
       json: ${{ steps.get-benchmark-durations.outputs.json }}
-    needs: [ check-permissions, build-build-tools-image ]
+    needs: [ check-permissions, build-build-tools-image, deploy ]
     runs-on: [ self-hosted, small ]
     container:
       image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
@@ -264,7 +264,7 @@ jobs:
 
   benchmarks:
     if: github.ref_name == 'main' || contains(github.event.pull_request.labels.*.name, 'run-benchmarks')
-    needs: [ check-permissions, build-and-test-locally, build-build-tools-image, get-benchmarks-durations ]
+    needs: [ check-permissions, build-build-tools-image, get-benchmarks-durations ]
     permissions:
       id-token: write # aws-actions/configure-aws-credentials
       statuses: write
