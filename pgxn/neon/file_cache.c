@@ -220,10 +220,8 @@ lfc_maybe_disabled(void)
 static bool
 lfc_ensure_opened(void)
 {
-	bool		enabled = !lfc_maybe_disabled();
-
 	/* Open cache file if not done yet */
-	if (lfc_desc <= 0 && enabled)
+	if (lfc_desc <= 0)
 	{
 		lfc_desc = BasicOpenFile(lfc_path, O_RDWR);
 
@@ -233,7 +231,7 @@ lfc_ensure_opened(void)
 			return false;
 		}
 	}
-	return enabled;
+	return true;
 }
 
 static void
@@ -338,10 +336,11 @@ lfc_change_limit_hook(int newval, void *extra)
 {
 	uint32		new_size = SIZE_MB_TO_CHUNKS(newval);
 
-	if (!is_normal_backend())
+	if (!lfc_ctl || !is_normal_backend())
 		return;
 
-	if (!lfc_ensure_opened())
+	/* Open LFC file only if LFC was  enabled or we are going to reenable it */
+	if ((newval > 0 || LFC_ENABLED()) && !lfc_ensure_opened())
 		return;
 
 	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
