@@ -236,5 +236,5 @@ runs:
       uses: ./.github/actions/allure-report-store
       with:
         report-dir: /tmp/test_output/allure/results
-        unique-key: ${{ inputs.build_type }}-${{ inputs.pg_version }}
+        unique-key: ${{ inputs.build_type }}-${{ inputs.pg_version }}-${{ runner.arch }}
         aws-oicd-role-arn: ${{ inputs.aws-oicd-role-arn }}

@@ -29,6 +29,11 @@ runs:
   using: "composite"
 
   steps:
+    - name: Start log group
+      # https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/workflow-commands-for-github-actions#grouping-log-lines
+      shell: bash -euo pipefail {0}
+      run: echo "::group::allure-report-generate"
+
     # We're using some of env variables quite offen, so let's set them once.
     #
     # It would be nice to have them set in common runs.env[0] section, but it doesn't work[1]
@@ -38,9 +43,11 @@ runs:
     #
     - name: Set variables
       shell: bash -euxo pipefail {0}
+      env:
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        BUCKET: neon-github-public-dev
       run: |
-        PR_NUMBER=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH" || true)
-        if [ "${PR_NUMBER}" != "null" ]; then
+        if [ -n "${PR_NUMBER}" ]; then
           BRANCH_OR_PR=pr-${PR_NUMBER}
         elif [ "${GITHUB_REF_NAME}" = "main" ] || [ "${GITHUB_REF_NAME}" = "release" ] || \
              [ "${GITHUB_REF_NAME}" = "release-proxy" ] || [ "${GITHUB_REF_NAME}" = "release-compute" ]; then
@@ -59,8 +66,6 @@ runs:
         echo "LOCK_FILE=${LOCK_FILE}"       >> $GITHUB_ENV
         echo "WORKDIR=${WORKDIR}"           >> $GITHUB_ENV
         echo "BUCKET=${BUCKET}"             >> $GITHUB_ENV
-      env:
-        BUCKET: neon-github-public-dev
 
     # TODO: We can replace with a special docker image with Java and Allure pre-installed
     - uses: actions/setup-java@v4
@@ -80,8 +85,8 @@ runs:
           rm -f ${ALLURE_ZIP}
         fi
       env:
-        ALLURE_VERSION: 2.27.0
-        ALLURE_ZIP_SHA256: b071858fb2fa542c65d8f152c5c40d26267b2dfb74df1f1608a589ecca38e777
+        ALLURE_VERSION: 2.32.2
+        ALLURE_ZIP_SHA256: 3f28885e2118f6317c92f667eaddcc6491400af1fb9773c1f3797a5fa5174953
 
     - uses: aws-actions/configure-aws-credentials@v4
       if: ${{ !cancelled() }}
@@ -245,3 +250,8 @@ runs:
             target_url: `${REPORT_URL}`,
             context: 'Allure report',
           })
+
+    - name: Close log group
+      if: always()
+      shell: bash -euo pipefail {0}
+      run: echo "::endgroup::"
