@@ -287,7 +287,7 @@ def test_readonly_node_gc(neon_env_builder: NeonEnvBuilder):
                 offset=offset,
             )
 
-        # Do some update so we can increment latest_gc_cutoff
+        # Do some update so we can increment gc_cutoff
         generate_updates_on_main(env, ep_main, i, end=100)
 
     # Wait for the existing lease to expire.

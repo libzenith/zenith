@@ -852,7 +852,7 @@ impl Timeline {
         //
         // Holding this read guard also blocks [`Self::gc_timeline`] from entering while we
         // are rewriting layers.
-        let latest_gc_cutoff = self.get_latest_gc_cutoff_lsn();
+        let latest_gc_cutoff = self.get_applied_gc_cutoff_lsn();
 
         tracing::info!(
             "latest_gc_cutoff: {}, pitr cutoff {}",
@@ -2202,7 +2202,7 @@ impl Timeline {
 
         // TODO: ensure the child branches will not use anything below the watermark, or consider
         // them when computing the watermark.
-        gc_cutoff_lsn.min(*self.get_latest_gc_cutoff_lsn())
+        gc_cutoff_lsn.min(*self.get_applied_gc_cutoff_lsn())
     }
 
     /// Split a gc-compaction job into multiple compaction jobs. The split is based on the key range and the estimated size of the compaction job.

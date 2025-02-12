@@ -130,7 +130,10 @@ struct TimelineMetadataBodyV2 {
     prev_record_lsn: Option<Lsn>,
     ancestor_timeline: Option<TimelineId>,
     ancestor_lsn: Lsn,
+
+    // The LSN at which GC was last executed.  Synonym of [`Timeline::applied_gc_cutoff_lsn`].
     latest_gc_cutoff_lsn: Lsn,
+
     initdb_lsn: Lsn,
     pg_version: u32,
 }

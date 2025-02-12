@@ -1136,7 +1136,24 @@ pub struct TimelineInfo {
     pub ancestor_lsn: Option<Lsn>,
     pub last_record_lsn: Lsn,
     pub prev_record_lsn: Option<Lsn>,
+
+    /// Legacy field for compat with control plane.  Synonym of `min_readable_lsn`.
+    /// TODO: remove once control plane no longer reads it.
     pub latest_gc_cutoff_lsn: Lsn,
+
+    /// The LSN up to which GC has advanced: older data may still exist but it is not available for clients.
+    /// This LSN is not suitable for deciding where to create branches etc: use [`TimelineInfo::min_readable_lsn`] instead,
+    /// as it is easier to reason about.
+    pub applied_gc_cutoff_lsn: Lsn,
+
+    /// The upper bound of data which is either already GC'ed, or elegible to be GC'ed at any time based on PITR interval.
+    /// This LSN represents the "end of history" for this timeline, and callers should use it to figure out the oldest
+    /// LSN at which it is legal to create a branch or ephemeral endpoint.
+    ///
+    /// Note that holders of valid LSN leases may be able to create branches and read pages earlier
+    /// than this LSN, but new leases may not be taken out earlier than this LSN.
+    pub min_readable_lsn: Lsn,
+
     pub disk_consistent_lsn: Lsn,
 
     /// The LSN that we have succesfully uploaded to remote storage

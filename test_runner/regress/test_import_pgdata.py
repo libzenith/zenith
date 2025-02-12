@@ -231,14 +231,14 @@ def test_pgdata_import_smoke(
     shard_zero_http = shard_zero_ps.http_client()
     shard_zero_timeline_info = shard_zero_http.timeline_detail(shard_zero["shard_id"], timeline_id)
     initdb_lsn = Lsn(shard_zero_timeline_info["initdb_lsn"])
-    latest_gc_cutoff_lsn = Lsn(shard_zero_timeline_info["latest_gc_cutoff_lsn"])
+    min_readable_lsn = Lsn(shard_zero_timeline_info["min_readable_lsn"])
     last_record_lsn = Lsn(shard_zero_timeline_info["last_record_lsn"])
     disk_consistent_lsn = Lsn(shard_zero_timeline_info["disk_consistent_lsn"])
     _remote_consistent_lsn = Lsn(shard_zero_timeline_info["remote_consistent_lsn"])
     remote_consistent_lsn_visible = Lsn(shard_zero_timeline_info["remote_consistent_lsn_visible"])
     # assert remote_consistent_lsn_visible == remote_consistent_lsn TODO: this fails initially and after restart, presumably because `UploadQueue::clean.1` is still `None`
     assert remote_consistent_lsn_visible == disk_consistent_lsn
-    assert initdb_lsn == latest_gc_cutoff_lsn
+    assert initdb_lsn == min_readable_lsn
     assert disk_consistent_lsn == initdb_lsn + 8
     assert last_record_lsn == disk_consistent_lsn
     # TODO: assert these values are the same everywhere

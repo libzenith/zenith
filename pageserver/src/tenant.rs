@@ -4695,24 +4695,24 @@ impl Tenant {
         // We check it against both the planned GC cutoff stored in 'gc_info',
         // and the 'latest_gc_cutoff' of the last GC that was performed.  The
         // planned GC cutoff in 'gc_info' is normally larger than
-        // 'latest_gc_cutoff_lsn', but beware of corner cases like if you just
+        // 'applied_gc_cutoff_lsn', but beware of corner cases like if you just
         // changed the GC settings for the tenant to make the PITR window
         // larger, but some of the data was already removed by an earlier GC
         // iteration.
 
         // check against last actual 'latest_gc_cutoff' first
-        let latest_gc_cutoff_lsn = src_timeline.get_latest_gc_cutoff_lsn();
+        let applied_gc_cutoff_lsn = src_timeline.get_applied_gc_cutoff_lsn();
         {
             let gc_info = src_timeline.gc_info.read().unwrap();
             let planned_cutoff = gc_info.min_cutoff();
             if gc_info.lsn_covered_by_lease(start_lsn) {
-                tracing::info!("skipping comparison of {start_lsn} with gc cutoff {} and planned gc cutoff {planned_cutoff} due to lsn lease", *latest_gc_cutoff_lsn);
+                tracing::info!("skipping comparison of {start_lsn} with gc cutoff {} and planned gc cutoff {planned_cutoff} due to lsn lease", *applied_gc_cutoff_lsn);
             } else {
                 src_timeline
-                    .check_lsn_is_in_scope(start_lsn, &latest_gc_cutoff_lsn)
+                    .check_lsn_is_in_scope(start_lsn, &applied_gc_cutoff_lsn)
                     .context(format!(
                         "invalid branch start lsn: less than latest GC cutoff {}",
-                        *latest_gc_cutoff_lsn,
+                        *applied_gc_cutoff_lsn,
                     ))
                     .map_err(CreateTimelineError::AncestorLsn)?;
 
@@ -4751,7 +4751,7 @@ impl Tenant {
             dst_prev,
             Some(src_id),
             start_lsn,
-            *src_timeline.latest_gc_cutoff_lsn.read(), // FIXME: should we hold onto this guard longer?
+            *src_timeline.applied_gc_cutoff_lsn.read(), // FIXME: should we hold onto this guard longer?
             src_timeline.initdb_lsn,
             src_timeline.pg_version,
         );
@@ -6130,8 +6130,8 @@ mod tests {
         make_some_layers(tline.as_ref(), Lsn(0x20), &ctx).await?;
 
         repo.gc_iteration(Some(TIMELINE_ID), 0x10, Duration::ZERO)?;
-        let latest_gc_cutoff_lsn = tline.get_latest_gc_cutoff_lsn();
-        assert!(*latest_gc_cutoff_lsn > Lsn(0x25));
+        let applied_gc_cutoff_lsn = tline.get_applied_gc_cutoff_lsn();
+        assert!(*applied_gc_cutoff_lsn > Lsn(0x25));
         match tline.get(*TEST_KEY, Lsn(0x25)) {
             Ok(_) => panic!("request for page should have failed"),
             Err(err) => assert!(err.to_string().contains("not found at")),
@@ -8427,7 +8427,7 @@ mod tests {
             .await?;
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x30))
                 .wait()
@@ -8535,7 +8535,7 @@ mod tests {
         // increase GC horizon and compact again
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x40))
                 .wait()
@@ -8703,8 +8703,8 @@ mod tests {
 
         // Force set disk consistent lsn so we can get the cutoff at `end_lsn`.
         info!(
-            "latest_gc_cutoff_lsn: {}",
-            *timeline.get_latest_gc_cutoff_lsn()
+            "applied_gc_cutoff_lsn: {}",
+            *timeline.get_applied_gc_cutoff_lsn()
         );
         timeline.force_set_disk_consistent_lsn(end_lsn);
 
@@ -8730,7 +8730,7 @@ mod tests {
 
         // Make lease on a already GC-ed LSN.
         // 0/80 does not have a valid lease + is below latest_gc_cutoff
-        assert!(Lsn(0x80) < *timeline.get_latest_gc_cutoff_lsn());
+        assert!(Lsn(0x80) < *timeline.get_applied_gc_cutoff_lsn());
         timeline
             .init_lsn_lease(Lsn(0x80), timeline.get_lsn_lease_length(), &ctx)
             .expect_err("lease request on GC-ed LSN should fail");
@@ -8921,7 +8921,7 @@ mod tests {
         };
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x30))
                 .wait()
@@ -9008,7 +9008,7 @@ mod tests {
         // increase GC horizon and compact again
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x40))
                 .wait()
@@ -9461,7 +9461,7 @@ mod tests {
             .await?;
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x30))
                 .wait()
@@ -9608,7 +9608,7 @@ mod tests {
         // increase GC horizon and compact again
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x38))
                 .wait()
@@ -9709,7 +9709,7 @@ mod tests {
             .await?;
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x30))
                 .wait()
@@ -9960,7 +9960,7 @@ mod tests {
 
         {
             parent_tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x10))
                 .wait()
@@ -9980,7 +9980,7 @@ mod tests {
 
         {
             branch_tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x50))
                 .wait()
@@ -10336,7 +10336,7 @@ mod tests {
 
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x30))
                 .wait()
@@ -10721,7 +10721,7 @@ mod tests {
             .await?;
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x30))
                 .wait()
@@ -10972,7 +10972,7 @@ mod tests {
             .await?;
         {
             tline
-                .latest_gc_cutoff_lsn
+                .applied_gc_cutoff_lsn
                 .lock_for_write()
                 .store_and_unlock(Lsn(0x30))
                 .wait()

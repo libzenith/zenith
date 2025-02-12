@@ -394,7 +394,7 @@ pub(super) async fn gather_inputs(
             ancestor_lsn,
             last_record: last_record_lsn,
             // this is not used above, because it might not have updated recently enough
-            latest_gc_cutoff: *timeline.get_latest_gc_cutoff_lsn(),
+            latest_gc_cutoff: *timeline.get_applied_gc_cutoff_lsn(),
             next_pitr_cutoff,
             retention_param_cutoff,
             lease_points,

@@ -1080,7 +1080,10 @@ components:
           type: integer
         state:
           type: string
-        latest_gc_cutoff_lsn:
+        min_readable_lsn:
+          type: string
+          format: hex
+        applied_gc_cutoff_lsn:
           type: string
           format: hex
 

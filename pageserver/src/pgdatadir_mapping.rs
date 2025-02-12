@@ -611,7 +611,7 @@ impl Timeline {
     ) -> Result<LsnForTimestamp, PageReconstructError> {
         pausable_failpoint!("find-lsn-for-timestamp-pausable");
 
-        let gc_cutoff_lsn_guard = self.get_latest_gc_cutoff_lsn();
+        let gc_cutoff_lsn_guard = self.get_applied_gc_cutoff_lsn();
         let gc_cutoff_planned = {
             let gc_info = self.gc_info.read().unwrap();
             gc_info.min_cutoff()
