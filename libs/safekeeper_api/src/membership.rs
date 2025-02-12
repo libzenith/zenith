@@ -54,12 +54,12 @@ impl MemberSet {
         Ok(MemberSet { m: members })
     }
 
-    pub fn contains(&self, sk: &SafekeeperId) -> bool {
-        self.m.iter().any(|m| m.id == sk.id)
+    pub fn contains(&self, sk: NodeId) -> bool {
+        self.m.iter().any(|m| m.id == sk)
     }
 
     pub fn add(&mut self, sk: SafekeeperId) -> anyhow::Result<()> {
-        if self.contains(&sk) {
+        if self.contains(sk.id) {
             bail!(format!(
                 "sk {} is already member of the set {}",
                 sk.id, self
@@ -98,6 +98,11 @@ impl Configuration {
             members: MemberSet::empty(),
             new_members: None,
         }
+    }
+
+    /// Is `sk_id` member of the configuration?
+    pub fn contains(&self, sk_id: NodeId) -> bool {
+        self.members.contains(sk_id) || self.new_members.as_ref().is_some_and(|m| m.contains(sk_id))
     }
 }
 

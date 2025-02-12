@@ -1727,7 +1727,7 @@ def test_replace_safekeeper(neon_env_builder: NeonEnvBuilder):
 
 
 @pytest.mark.parametrize("auth_enabled", [False, True])
-def test_delete_force(neon_env_builder: NeonEnvBuilder, auth_enabled: bool):
+def test_delete(neon_env_builder: NeonEnvBuilder, auth_enabled: bool):
     neon_env_builder.auth_enabled = auth_enabled
     env = neon_env_builder.init_start()
 
@@ -2256,13 +2256,21 @@ def test_membership_api(neon_env_builder: NeonEnvBuilder):
     neon_env_builder.num_safekeepers = 1
     env = neon_env_builder.init_start()
 
+    # These are expected after timeline deletion on safekeepers.
+    env.pageserver.allowed_errors.extend(
+        [
+            ".*Timeline .* was not found in global map.*",
+            ".*Timeline .* was cancelled and cannot be used anymore.*",
+        ]
+    )
+
     tenant_id = env.initial_tenant
     timeline_id = env.initial_timeline
 
     sk = env.safekeepers[0]
     http_cli = sk.http_client()
 
-    sk_id_1 = SafekeeperId(env.safekeepers[0].id, "localhost", sk.port.pg_tenant_only)
+    sk_id_1 = SafekeeperId(sk.id, "localhost", sk.port.pg_tenant_only)
     sk_id_2 = SafekeeperId(11, "localhost", 5434)  # just a mock
 
     # Request to switch before timeline creation should fail.
@@ -2290,19 +2298,28 @@ def test_membership_api(neon_env_builder: NeonEnvBuilder):
     log.info(f"conf after restart: {after_restart}")
     assert after_restart.generation == 4
 
-    # Switch into disjoint conf.
-    non_joint = Configuration(generation=5, members=[sk_id_2], new_members=None)
+    # Switch into non joint conf of which sk is not a member, must fail.
+    non_joint_not_member = Configuration(generation=5, members=[sk_id_2], new_members=None)
+    with pytest.raises(requests.exceptions.HTTPError):
+        resp = http_cli.membership_switch(tenant_id, timeline_id, non_joint_not_member)
+
+    # Switch into good non joint conf.
+    non_joint = Configuration(generation=6, members=[sk_id_1], new_members=None)
     resp = http_cli.membership_switch(tenant_id, timeline_id, non_joint)
     log.info(f"non joint switch resp: {resp}")
     assert resp.previous_conf.generation == 4
-    assert resp.current_conf.generation == 5
+    assert resp.current_conf.generation == 6
 
-    # Switch request to lower conf should be ignored.
-    lower_conf = Configuration(generation=3, members=[], new_members=None)
-    resp = http_cli.membership_switch(tenant_id, timeline_id, lower_conf)
-    log.info(f"lower switch resp: {resp}")
-    assert resp.previous_conf.generation == 5
-    assert resp.current_conf.generation == 5
+    # Switch request to lower conf should be rejected.
+    lower_conf = Configuration(generation=3, members=[sk_id_1], new_members=None)
+    with pytest.raises(requests.exceptions.HTTPError):
+        http_cli.membership_switch(tenant_id, timeline_id, lower_conf)
+
+    # Now, exclude sk from the membership, timeline should be deleted.
+    excluded_conf = Configuration(generation=7, members=[sk_id_2], new_members=None)
+    http_cli.timeline_exclude(tenant_id, timeline_id, excluded_conf)
+    with pytest.raises(requests.exceptions.HTTPError):
+        http_cli.timeline_status(tenant_id, timeline_id)
 
 
 # In this test we check for excessive START_REPLICATION and START_WAL_PUSH queries
