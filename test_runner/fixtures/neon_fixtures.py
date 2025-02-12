@@ -4972,8 +4972,13 @@ def check_restored_datadir_content(
 
     restored_files = list_files_to_compare(restored_dir_path)
 
+    # pg_notify files are always ignored
+    pgdata_files = [f for f in pgdata_files if not f.startswith("pg_notify")]
+    restored_files = [f for f in pgdata_files if not f.startswith("pg_notify")]
+
+    # pg_xact and pg_multixact files are optional in basebackup: depending on our configuration they
+    # may be omitted and loaded on demand.
     if pgdata_files != restored_files:
-        # filter pg_xact and multixact files which are downloaded on demand
         pgdata_files = [
             f
             for f in pgdata_files

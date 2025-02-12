@@ -261,7 +261,7 @@ def test_isolation(
         pg_bin.run(pg_isolation_regress_command, env=env_vars, cwd=runpath)
 
     # This fails with a mismatch on `pg_multixact/offsets/0000`
-    # post_checks(env, test_output_dir, DBNAME, endpoint)
+    post_checks(env, test_output_dir, DBNAME, endpoint)
 
 
 # Run extra Neon-specific pg_regress-based tests. The tests and their
