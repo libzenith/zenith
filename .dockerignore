@@ -8,8 +8,10 @@
 !scripts/ninstall.sh
 !docker-compose/run-tests.sh
 
+!.cargo/config.toml
+
 # Directories
-!.cargo/
+#!.cargo
 !.config/
 !compute/
 !compute_tools/

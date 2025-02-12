@@ -1,0 +1,12 @@
+# When running under neonvm-guest a separate disk is mounted to
+# /var/db/postgres/compute. Make it owned by the postgres user.
+[Unit]
+Description=Change owner of /var/db/postgres/compute to postgres
+
+[Service]
+Type=oneshot
+ExecStart=chown postgres:postgres /var/db/postgres/compute
+RemainAfterExit=yes
+
+[Install]
+WantedBy=compute_ctl.service
