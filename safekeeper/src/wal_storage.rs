@@ -569,6 +569,7 @@ impl Storage for PhysicalStorage {
         }
 
         self.pending_wal_truncation = false;
+        info!("truncated WAL to {}", end_pos);
         Ok(())
     }
 

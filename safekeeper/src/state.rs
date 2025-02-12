@@ -272,7 +272,7 @@ where
         // Is switch allowed?
         if to.generation <= self.mconf.generation {
             info!(
-                "ignoring request to switch membership conf to lower {}, current conf {}",
+                "ignoring request to switch membership conf to {}, current conf {}",
                 to, self.mconf
             );
         } else {
