@@ -3277,7 +3277,7 @@ neon_read(SMgrRelation reln, ForkNumber forkNum, BlockNumber blkno, void *buffer
 			neon_log(ERROR, "unknown relpersistence '%c'", reln->smgr_relpersistence);
 	}
 
-	/* Try to read PS reponses if they are available */
+	/* Try to read PS results if they are available */
 	prefetch_pump_state();
 
 	neon_get_request_lsns(InfoFromSMgrRel(reln), forkNum, blkno, &request_lsns, 1);
@@ -3296,6 +3296,11 @@ neon_read(SMgrRelation reln, ForkNumber forkNum, BlockNumber blkno, void *buffer
 	}
 
 	neon_read_at_lsn(InfoFromSMgrRel(reln), forkNum, blkno, request_lsns, buffer);
+
+	/*
+	 * Try to receive prefetch results once again just to make sure we don't leave the smgr code while the OS might still have buffered bytes.
+	 */
+	prefetch_pump_state();
 
 #ifdef DEBUG_COMPARE_LOCAL
 	if (forkNum == MAIN_FORKNUM && IS_LOCAL_REL(reln))
@@ -3405,7 +3410,7 @@ neon_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		neon_log(ERROR, "Read request too large: %d is larger than max %d",
 				 nblocks, PG_IOV_MAX);
 
-	/* Try to read PS reponses if they are available */
+	/* Try to read PS results if they are available */
 	prefetch_pump_state();
 
 	neon_get_request_lsns(InfoFromSMgrRel(reln), forknum, blocknum,
@@ -3447,6 +3452,11 @@ neon_readv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	neon_read_at_lsnv(InfoFromSMgrRel(reln), forknum, blocknum, request_lsns,
 					  buffers, nblocks, read);
+
+	/*
+	 * Try to receive prefetch results once again just to make sure we don't leave the smgr code while the OS might still have buffered bytes.
+	 */
+	prefetch_pump_state();
 
 #ifdef DEBUG_COMPARE_LOCAL
 	if (forkNum == MAIN_FORKNUM && IS_LOCAL_REL(reln))
