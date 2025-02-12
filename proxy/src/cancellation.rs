@@ -501,7 +501,7 @@ impl Session {
             _guard: Metrics::get()
                 .proxy
                 .cancel_channel_size
-                .guard(RedisMsgKind::HSet),
+                .guard(RedisMsgKind::HDel),
         };
 
         let _ = tx.send_timeout(op, REDIS_SEND_TIMEOUT).await.map_err(|e| {
