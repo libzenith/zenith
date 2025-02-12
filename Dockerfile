@@ -50,6 +50,14 @@ RUN set -e \
     && rm -rf pg_install/build \
     && tar -C pg_install -czf /home/nonroot/postgres_install.tar.gz .
 
+# Prepare cargo-chef recipe
+FROM $REPOSITORY/$IMAGE:$TAG AS plan
+WORKDIR /home/nonroot
+
+COPY --chown=nonroot . .
+
+RUN cargo chef prepare --recipe-path recipe.json
+
 # Build neon binaries
 FROM $REPOSITORY/$IMAGE:$TAG AS build
 WORKDIR /home/nonroot
@@ -63,9 +71,15 @@ COPY --from=pg-build /home/nonroot/pg_install/v16/include/postgresql/server pg_i
 COPY --from=pg-build /home/nonroot/pg_install/v17/include/postgresql/server pg_install/v17/include/postgresql/server
 COPY --from=pg-build /home/nonroot/pg_install/v16/lib                       pg_install/v16/lib
 COPY --from=pg-build /home/nonroot/pg_install/v17/lib                       pg_install/v17/lib
+COPY --from=plan     /home/nonroot/recipe.json                              recipe.json
+
+ARG ADDITIONAL_RUSTFLAGS=""
+
+RUN set -e \
+    && RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=-Wl,--no-rosegment -Cforce-frame-pointers=yes ${ADDITIONAL_RUSTFLAGS}" cargo chef cook --release --recipe-path recipe.json
+
 COPY --chown=nonroot . .
 
-ARG ADDITIONAL_RUSTFLAGS
 RUN set -e \
     && RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=-Wl,--no-rosegment -Cforce-frame-pointers=yes ${ADDITIONAL_RUSTFLAGS}" cargo build \
       --bin pg_sni_router  \
