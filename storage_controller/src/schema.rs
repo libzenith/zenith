@@ -23,6 +23,7 @@ diesel::table! {
         scheduling_policy -> Varchar,
         listen_http_addr -> Varchar,
         listen_http_port -> Int4,
+        use_https -> Bool,
         listen_pg_addr -> Varchar,
         listen_pg_port -> Int4,
         availability_zone_id -> Varchar,

@@ -36,6 +36,8 @@ pub struct NodeMetadata {
     pub postgres_port: u16,
     pub http_host: String,
     pub http_port: u16,
+    #[serde(default)]
+    pub use_https: bool,
 
     // Deployment tools may write fields to the metadata file beyond what we
     // use in this type: this type intentionally only names fields that require.
