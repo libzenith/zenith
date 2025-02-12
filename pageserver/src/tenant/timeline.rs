@@ -1411,10 +1411,6 @@ impl Timeline {
         guard.layer_size_sum()
     }
 
-    pub(crate) fn resident_physical_size(&self) -> u64 {
-        self.metrics.resident_physical_size_get()
-    }
-
     pub(crate) fn get_directory_metrics(&self) -> [u64; DirectoryKind::KINDS_NUM] {
         array::from_fn(|idx| self.directory_metrics[idx].load(AtomicOrdering::Relaxed))
     }

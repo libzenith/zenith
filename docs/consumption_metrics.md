@@ -38,11 +38,6 @@ Currently, the following metrics are collected:
 Amount of WAL produced , by a timeline, i.e. last_record_lsn
 This is an absolute, per-timeline metric.
 
-- `resident_size`
-
-Size of all the layer files in the tenant's directory on disk on the pageserver.
-This is an absolute, per-tenant metric.
-
 - `remote_storage_size`
 
 Size of the remote storage (S3) directory.

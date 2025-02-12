@@ -506,7 +506,6 @@ class SyntheticSizeVerifier:
 
 PER_METRIC_VERIFIERS = {
     "remote_storage_size": CannotVerifyAnything,
-    "resident_size": CannotVerifyAnything,
     "written_size": WrittenDataVerifier,
     "written_data_bytes_delta": WrittenDataDeltaVerifier,
     "timeline_logical_size": CannotVerifyAnything,

@@ -224,7 +224,6 @@ fn post_restart_synthetic_size_uses_cached_if_available() {
     let tenant_id = TenantId::generate();
 
     let ts = TenantSnapshot {
-        resident_size: 1000,
         remote_size: 1000,
         // not yet calculated
         synthetic_size: 0,
@@ -245,7 +244,6 @@ fn post_restart_synthetic_size_uses_cached_if_available() {
         metrics,
         &[
             MetricsKey::remote_storage_size(tenant_id).at(now, 1000),
-            MetricsKey::resident_size(tenant_id).at(now, 1000),
             MetricsKey::synthetic_size(tenant_id).at(now, 1000),
         ]
     );
@@ -256,7 +254,6 @@ fn post_restart_synthetic_size_is_not_sent_when_not_cached() {
     let tenant_id = TenantId::generate();
 
     let ts = TenantSnapshot {
-        resident_size: 1000,
         remote_size: 1000,
         // not yet calculated
         synthetic_size: 0,
@@ -274,7 +271,6 @@ fn post_restart_synthetic_size_is_not_sent_when_not_cached() {
         metrics,
         &[
             MetricsKey::remote_storage_size(tenant_id).at(now, 1000),
-            MetricsKey::resident_size(tenant_id).at(now, 1000),
             // no synthetic size here
         ]
     );
@@ -295,14 +291,13 @@ pub(crate) const fn metric_examples_old(
     timeline_id: TimelineId,
     now: DateTime<Utc>,
     before: DateTime<Utc>,
-) -> [RawMetric; 6] {
+) -> [RawMetric; 5] {
     [
         MetricsKey::written_size(tenant_id, timeline_id).at_old_format(now, 0),
         MetricsKey::written_size_delta(tenant_id, timeline_id)
             .from_until_old_format(before, now, 0),
         MetricsKey::timeline_logical_size(tenant_id, timeline_id).at_old_format(now, 0),
         MetricsKey::remote_storage_size(tenant_id).at_old_format(now, 0),
-        MetricsKey::resident_size(tenant_id).at_old_format(now, 0),
         MetricsKey::synthetic_size(tenant_id).at_old_format(now, 1),
     ]
 }
@@ -312,13 +307,12 @@ pub(crate) const fn metric_examples(
     timeline_id: TimelineId,
     now: DateTime<Utc>,
     before: DateTime<Utc>,
-) -> [NewRawMetric; 6] {
+) -> [NewRawMetric; 5] {
     [
         MetricsKey::written_size(tenant_id, timeline_id).at(now, 0),
         MetricsKey::written_size_delta(tenant_id, timeline_id).from_until(before, now, 0),
         MetricsKey::timeline_logical_size(tenant_id, timeline_id).at(now, 0),
         MetricsKey::remote_storage_size(tenant_id).at(now, 0),
-        MetricsKey::resident_size(tenant_id).at(now, 0),
         MetricsKey::synthetic_size(tenant_id).at(now, 1),
     ]
 }
