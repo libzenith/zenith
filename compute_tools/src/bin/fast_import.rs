@@ -122,21 +122,22 @@ pub(crate) async fn main() -> anyhow::Result<()> {
     });
 
     // Initialize AWS clients only if s3_prefix is specified
-    let (aws_config, kms_client) = if args.s3_prefix.is_some() {
+    let (s3_client, kms_client) = if args.s3_prefix.is_some() {
         let config = aws_config::load_defaults(BehaviorVersion::v2024_03_28()).await;
+        let s3_client = aws_sdk_s3::Client::new(&config);
         let kms = aws_sdk_kms::Client::new(&config);
-        (Some(config), Some(kms))
+        (Some(s3_client), Some(kms))
     } else {
         (None, None)
     };
-
-    let s3_client = aws_sdk_s3::Client::new(aws_config.as_ref().unwrap());
 
     // Get source connection string either from S3 spec or direct argument
     let source_connection_string = if let Some(s3_prefix) = &args.s3_prefix {
         let spec: Spec = {
             let spec_key = s3_prefix.append("/spec.json");
             let object = s3_client
+                .as_ref()
+                .unwrap()
                 .get_object()
                 .bucket(&spec_key.bucket)
                 .key(spec_key.key)
@@ -441,7 +442,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
     if let Some(s3_prefix) = args.s3_prefix {
         info!("upload pgdata");
         aws_s3_sync::upload_dir_recursive(
-            &s3_client,
+            s3_client.as_ref().unwrap(),
             Utf8Path::new(&pgdata_dir),
             &s3_prefix.append("/pgdata/"),
         )
@@ -456,7 +457,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
             std::fs::write(&status_file, serde_json::json!({"done": true}).to_string())
                 .context("write status file")?;
             aws_s3_sync::upload_dir_recursive(
-                &s3_client,
+                s3_client.as_ref().unwrap(),
                 &status_dir,
                 &s3_prefix.append("/status/"),
             )
