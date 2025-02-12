@@ -85,8 +85,8 @@ runs:
           rm -f ${ALLURE_ZIP}
         fi
       env:
-        ALLURE_VERSION: 2.27.0
-        ALLURE_ZIP_SHA256: b071858fb2fa542c65d8f152c5c40d26267b2dfb74df1f1608a589ecca38e777
+        ALLURE_VERSION: 2.32.2
+        ALLURE_ZIP_SHA256: 3f28885e2118f6317c92f667eaddcc6491400af1fb9773c1f3797a5fa5174953
 
     - uses: aws-actions/configure-aws-credentials@v4
       if: ${{ !cancelled() }}
