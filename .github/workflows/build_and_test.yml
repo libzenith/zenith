@@ -892,7 +892,7 @@ jobs:
       docker-hub-password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
 
   push-neon-image-prod:
-    if: github.ref_name == 'main' || github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
+    if: github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
     needs: [ generate-image-maps, neon-image, test-images ]
     uses: ./.github/workflows/_push-to-container-registry.yml
     with:
@@ -909,7 +909,7 @@ jobs:
       docker-hub-password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
 
   push-compute-image-prod:
-    if: github.ref_name == 'main' || github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
+    if: github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
     needs: [ generate-image-maps, vm-compute-node-image, test-images ]
     uses: ./.github/workflows/_push-to-container-registry.yml
     with:
