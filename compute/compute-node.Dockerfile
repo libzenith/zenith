@@ -1484,6 +1484,73 @@ WORKDIR /ext-src/pg_repack-src
 RUN make -j $(getconf _NPROCESSORS_ONLN) && \
     make -j $(getconf _NPROCESSORS_ONLN) install
 
+
+#########################################################################################
+#
+# Layer "pgaudit"
+# compile pgaudit extension
+#
+#########################################################################################
+
+FROM build-deps AS pgaudit-src
+ARG PG_VERSION
+WORKDIR /ext-src
+RUN case "${PG_VERSION}" in \
+    "v14") \
+    export PGAUDIT_VERSION=1.6.2 \
+    export PGAUDIT_CHECKSUM=1f350d70a0cbf488c0f2b485e3a5c9b11f78ad9e3cbb95ef6904afa1eb3187eb \
+    ;; \
+    "v15") \
+    export PGAUDIT_VERSION=1.7.0 \
+    export PGAUDIT_CHECKSUM=8f4a73e451c88c567e516e6cba7dc1e23bc91686bb6f1f77f8f3126d428a8bd8 \
+    ;; \
+    "v16") \
+    export PGAUDIT_VERSION=16.0 \
+    export PGAUDIT_CHECKSUM=d53ef985f2d0b15ba25c512c4ce967dce07b94fd4422c95bd04c4c1a055fe738 \
+    ;; \
+    "v17") \
+    export PGAUDIT_VERSION=17.0 \
+    export PGAUDIT_CHECKSUM=7d0d08d030275d525f36cd48b38c6455f1023da863385badff0cec44965bfd8c \
+    ;; \
+    *) \
+    echo "pgaudit is not supported on this PostgreSQL version" && exit 1;; \
+    esac && \
+    wget https://github.com/pgaudit/pgaudit/archive/refs/tags/${PGAUDIT_VERSION}.tar.gz -O pgaudit.tar.gz && \
+    echo "${PGAUDIT_CHECKSUM} pgaudit.tar.gz" | sha256sum --check && \
+    mkdir pgaudit-src && cd pgaudit-src && tar xzf ../pgaudit.tar.gz --strip-components=1 -C .
+
+FROM pg-build AS pgaudit-build
+COPY --from=pgaudit-src /ext-src/ /ext-src/
+WORKDIR /ext-src/pgaudit-src
+RUN make install USE_PGXS=1 -j $(getconf _NPROCESSORS_ONLN)
+
+#########################################################################################
+#
+# Layer "pgauditlogtofile"
+# compile pgauditlogtofile extension
+#
+#########################################################################################
+
+FROM build-deps AS pgauditlogtofile-src
+ARG PG_VERSION
+WORKDIR /ext-src
+RUN case "${PG_VERSION}" in \
+    "v14" | "v15" | "v16" | "v17") \
+    export PGAUDITLOGTOFILE_VERSION=v1.6.4 \
+    export PGAUDITLOGTOFILE_CHECKSUM=ef801eb09c26aaa935c0dabd92c81eb9ebe338930daa9674d420a280c6bc2d70 \
+    ;; \
+    *) \
+    echo "pgauditlogtofile is not supported on this PostgreSQL version" && exit 1;; \
+    esac && \
+    wget https://github.com/fmbiete/pgauditlogtofile/archive/refs/tags/${PGAUDITLOGTOFILE_VERSION}.tar.gz -O pgauditlogtofile.tar.gz && \
+    echo "${PGAUDITLOGTOFILE_CHECKSUM} pgauditlogtofile.tar.gz" | sha256sum --check && \
+    mkdir pgauditlogtofile-src && cd pgauditlogtofile-src && tar xzf ../pgauditlogtofile.tar.gz --strip-components=1 -C .
+
+FROM pg-build AS pgauditlogtofile-build
+COPY --from=pgauditlogtofile-src /ext-src/ /ext-src/
+WORKDIR /ext-src/pgauditlogtofile-src
+RUN make install USE_PGXS=1 -j $(getconf _NPROCESSORS_ONLN)
+
 #########################################################################################
 #
 # Layer "neon-ext-build"
@@ -1578,6 +1645,8 @@ COPY --from=pg_ivm-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg_partman-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg_mooncake-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg_repack-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pgaudit-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pgauditlogtofile-build /usr/local/pgsql/ /usr/local/pgsql/
 
 #########################################################################################
 #
