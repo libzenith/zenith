@@ -286,13 +286,7 @@ def test_sql_regress(
     )
 
     # Connect to postgres and create a database called "regression".
-    endpoint = env.endpoints.create_start(
-        "main",
-        config_lines=[
-            # Enable the test mode, so that we don't need to patch the test cases.
-            "neon.regress_test_mode = true",
-        ],
-    )
+    endpoint = env.endpoints.create_start("main")
     endpoint.safe_psql(f"CREATE DATABASE {DBNAME}")
 
     # Create some local directories for pg_regress to run in.

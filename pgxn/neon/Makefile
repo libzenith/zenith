@@ -19,7 +19,7 @@ OBJS = \
 	unstable_extensions.o \
 	walproposer.o \
 	walproposer_pg.o \
-	control_plane_connector.o \
+	neon_ddl_handler.o \
 	walsender_hooks.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
