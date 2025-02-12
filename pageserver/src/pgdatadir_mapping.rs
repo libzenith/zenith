@@ -23,13 +23,14 @@ use anyhow::{ensure, Context};
 use bytes::{Buf, Bytes, BytesMut};
 use enum_map::Enum;
 use itertools::Itertools;
-use pageserver_api::key::Key;
 use pageserver_api::key::{
     dbdir_key_range, rel_block_to_key, rel_dir_to_key, rel_key_range, rel_size_to_key,
-    relmap_file_key, repl_origin_key, repl_origin_key_range, slru_block_to_key, slru_dir_to_key,
-    slru_segment_key_range, slru_segment_size_to_key, twophase_file_key, twophase_key_range,
-    CompactKey, AUX_FILES_KEY, CHECKPOINT_KEY, CONTROLFILE_KEY, DBDIR_KEY, TWOPHASEDIR_KEY,
+    rel_tag_sparse_key_range, relmap_file_key, repl_origin_key, repl_origin_key_range,
+    slru_block_to_key, slru_dir_to_key, slru_segment_key_range, slru_segment_size_to_key,
+    twophase_file_key, twophase_key_range, CompactKey, RelDirExists, AUX_FILES_KEY, CHECKPOINT_KEY,
+    CONTROLFILE_KEY, DBDIR_KEY, TWOPHASEDIR_KEY,
 };
+use pageserver_api::key::{rel_tag_sparse_key, Key};
 use pageserver_api::keyspace::SparseKeySpace;
 use pageserver_api::record::NeonWalRecord;
 use pageserver_api::reltag::{BlockNumber, RelTag, SlruKind};
@@ -490,12 +491,33 @@ impl Timeline {
         if !dbdirs.contains_key(&(tag.spcnode, tag.dbnode)) {
             return Ok(false);
         }
-        // fetch directory listing
+
+        // Read path: first read the new reldir keyspace. Early return if the relation exists.
+        // Otherwise, read the old reldir keyspace.
+        // TODO: if IndexPart::rel_size_migration is `Migrated`, we only need to read from v2.
+
+        if self.get_rel_size_v2_enabled() {
+            // fetch directory listing (new)
+            let key = rel_tag_sparse_key(tag.spcnode, tag.dbnode, tag.relnode, tag.forknum);
+            let buf = RelDirExists::decode_option(version.sparse_get(self, key, ctx).await?)
+                .map_err(|_| PageReconstructError::Other(anyhow::anyhow!("invalid reldir key")))?;
+            let exists_v2 = buf == RelDirExists::Exists;
+            // Fast path: if the relation exists in the new format, return true.
+            // TODO: we should have a verification mode that checks both keyspaces
+            // to ensure the relation only exists in one of them.
+            if exists_v2 {
+                return Ok(true);
+            }
+        }
+
+        // fetch directory listing (old)
+
         let key = rel_dir_to_key(tag.spcnode, tag.dbnode);
         let buf = version.get(self, key, ctx).await?;
 
         let dir = RelDirectory::des(&buf)?;
-        Ok(dir.rels.contains(&(tag.relnode, tag.forknum)))
+        let exists_v1 = dir.rels.contains(&(tag.relnode, tag.forknum));
+        Ok(exists_v1)
     }
 
     /// Get a list of all existing relations in given tablespace and database.
@@ -513,12 +535,12 @@ impl Timeline {
         version: Version<'_>,
         ctx: &RequestContext,
     ) -> Result<HashSet<RelTag>, PageReconstructError> {
-        // fetch directory listing
+        // fetch directory listing (old)
         let key = rel_dir_to_key(spcnode, dbnode);
         let buf = version.get(self, key, ctx).await?;
 
         let dir = RelDirectory::des(&buf)?;
-        let rels: HashSet<RelTag> =
+        let rels_v1: HashSet<RelTag> =
             HashSet::from_iter(dir.rels.iter().map(|(relnode, forknum)| RelTag {
                 spcnode,
                 dbnode,
@@ -526,6 +548,44 @@ impl Timeline {
                 forknum: *forknum,
             }));
 
+        if !self.get_rel_size_v2_enabled() {
+            return Ok(rels_v1);
+        }
+
+        // scan directory listing (new), merge with the old results
+        let key_range = rel_tag_sparse_key_range(spcnode, dbnode);
+        let io_concurrency = IoConcurrency::spawn_from_conf(
+            self.conf,
+            self.gate
+                .enter()
+                .map_err(|_| PageReconstructError::Cancelled)?,
+        );
+        let results = self
+            .scan(
+                KeySpace::single(key_range),
+                version.get_lsn(),
+                ctx,
+                io_concurrency,
+            )
+            .await?;
+        let mut rels = rels_v1;
+        for (key, val) in results {
+            let val = RelDirExists::decode(&val?)
+                .map_err(|_| PageReconstructError::Other(anyhow::anyhow!("invalid reldir key")))?;
+            if val == RelDirExists::Removed {
+                continue;
+            }
+            assert_eq!(key.field6, 1);
+            assert_eq!(key.field2, spcnode);
+            assert_eq!(key.field3, dbnode);
+            let did_not_contain = rels.insert(RelTag {
+                spcnode,
+                dbnode,
+                relnode: key.field4,
+                forknum: key.field5,
+            });
+            debug_assert!(did_not_contain, "duplicate reltag in v2");
+        }
         Ok(rels)
     }
 
@@ -1144,7 +1204,11 @@ impl Timeline {
 
         let dense_keyspace = result.to_keyspace();
         let sparse_keyspace = SparseKeySpace(KeySpace {
-            ranges: vec![Key::metadata_aux_key_range(), repl_origin_key_range()],
+            ranges: vec![
+                Key::metadata_aux_key_range(),
+                repl_origin_key_range(),
+                Key::rel_dir_sparse_key_range(),
+            ],
         });
 
         if cfg!(debug_assertions) {
@@ -1274,10 +1338,20 @@ pub struct DatadirModification<'a> {
 
     /// For special "directory" keys that store key-value maps, track the size of the map
     /// if it was updated in this modification.
-    pending_directory_entries: Vec<(DirectoryKind, usize)>,
+    pending_directory_entries: Vec<(DirectoryKind, MetricsUpdate)>,
 
     /// An **approximation** of how many metadata bytes will be written to the EphemeralFile.
     pending_metadata_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricsUpdate {
+    /// Set the metrics to this value
+    Set(u64),
+    /// Increment the metrics by this value
+    Add(u64),
+    /// Decrement the metrics by this value
+    Sub(u64),
 }
 
 impl DatadirModification<'_> {
@@ -1359,7 +1433,8 @@ impl DatadirModification<'_> {
         let buf = DbDirectory::ser(&DbDirectory {
             dbdirs: HashMap::new(),
         })?;
-        self.pending_directory_entries.push((DirectoryKind::Db, 0));
+        self.pending_directory_entries
+            .push((DirectoryKind::Db, MetricsUpdate::Set(0)));
         self.put(DBDIR_KEY, Value::Image(buf.into()));
 
         let buf = if self.tline.pg_version >= 17 {
@@ -1372,7 +1447,7 @@ impl DatadirModification<'_> {
             })
         }?;
         self.pending_directory_entries
-            .push((DirectoryKind::TwoPhase, 0));
+            .push((DirectoryKind::TwoPhase, MetricsUpdate::Set(0)));
         self.put(TWOPHASEDIR_KEY, Value::Image(buf.into()));
 
         let buf: Bytes = SlruSegmentDirectory::ser(&SlruSegmentDirectory::default())?.into();
@@ -1382,17 +1457,23 @@ impl DatadirModification<'_> {
         // harmless but they'd just be dropped on later compaction.
         if self.tline.tenant_shard_id.is_shard_zero() {
             self.put(slru_dir_to_key(SlruKind::Clog), empty_dir.clone());
-            self.pending_directory_entries
-                .push((DirectoryKind::SlruSegment(SlruKind::Clog), 0));
+            self.pending_directory_entries.push((
+                DirectoryKind::SlruSegment(SlruKind::Clog),
+                MetricsUpdate::Set(0),
+            ));
             self.put(
                 slru_dir_to_key(SlruKind::MultiXactMembers),
                 empty_dir.clone(),
             );
-            self.pending_directory_entries
-                .push((DirectoryKind::SlruSegment(SlruKind::Clog), 0));
+            self.pending_directory_entries.push((
+                DirectoryKind::SlruSegment(SlruKind::Clog),
+                MetricsUpdate::Set(0),
+            ));
             self.put(slru_dir_to_key(SlruKind::MultiXactOffsets), empty_dir);
-            self.pending_directory_entries
-                .push((DirectoryKind::SlruSegment(SlruKind::MultiXactOffsets), 0));
+            self.pending_directory_entries.push((
+                DirectoryKind::SlruSegment(SlruKind::MultiXactOffsets),
+                MetricsUpdate::Set(0),
+            ));
         }
 
         Ok(())
@@ -1658,10 +1739,16 @@ impl DatadirModification<'_> {
         }
         if r.is_none() {
             // Create RelDirectory
+            // TODO: if we have fully migrated to v2, no need to create this directory
             let buf = RelDirectory::ser(&RelDirectory {
                 rels: HashSet::new(),
             })?;
-            self.pending_directory_entries.push((DirectoryKind::Rel, 0));
+            self.pending_directory_entries
+                .push((DirectoryKind::Rel, MetricsUpdate::Set(0)));
+            if self.tline.get_rel_size_v2_enabled() {
+                self.pending_directory_entries
+                    .push((DirectoryKind::RelV2, MetricsUpdate::Set(0)));
+            }
             self.put(
                 rel_dir_to_key(spcnode, dbnode),
                 Value::Image(Bytes::from(buf)),
@@ -1685,8 +1772,10 @@ impl DatadirModification<'_> {
             if !dir.xids.insert(xid) {
                 anyhow::bail!("twophase file for xid {} already exists", xid);
             }
-            self.pending_directory_entries
-                .push((DirectoryKind::TwoPhase, dir.xids.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::TwoPhase,
+                MetricsUpdate::Set(dir.xids.len() as u64),
+            ));
             Bytes::from(TwoPhaseDirectoryV17::ser(&dir)?)
         } else {
             let xid = xid as u32;
@@ -1694,8 +1783,10 @@ impl DatadirModification<'_> {
             if !dir.xids.insert(xid) {
                 anyhow::bail!("twophase file for xid {} already exists", xid);
             }
-            self.pending_directory_entries
-                .push((DirectoryKind::TwoPhase, dir.xids.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::TwoPhase,
+                MetricsUpdate::Set(dir.xids.len() as u64),
+            ));
             Bytes::from(TwoPhaseDirectory::ser(&dir)?)
         };
         self.put(TWOPHASEDIR_KEY, Value::Image(newdirbuf));
@@ -1744,8 +1835,10 @@ impl DatadirModification<'_> {
         let mut dir = DbDirectory::des(&buf)?;
         if dir.dbdirs.remove(&(spcnode, dbnode)).is_some() {
             let buf = DbDirectory::ser(&dir)?;
-            self.pending_directory_entries
-                .push((DirectoryKind::Db, dir.dbdirs.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::Db,
+                MetricsUpdate::Set(dir.dbdirs.len() as u64),
+            ));
             self.put(DBDIR_KEY, Value::Image(buf.into()));
         } else {
             warn!(
@@ -1778,39 +1871,81 @@ impl DatadirModification<'_> {
         // tablespace.  Create the reldir entry for it if so.
         let mut dbdir = DbDirectory::des(&self.get(DBDIR_KEY, ctx).await.context("read db")?)
             .context("deserialize db")?;
-        let rel_dir_key = rel_dir_to_key(rel.spcnode, rel.dbnode);
-        let mut rel_dir =
+
+        let dbdir_exists =
             if let hash_map::Entry::Vacant(e) = dbdir.dbdirs.entry((rel.spcnode, rel.dbnode)) {
                 // Didn't exist. Update dbdir
                 e.insert(false);
                 let buf = DbDirectory::ser(&dbdir).context("serialize db")?;
-                self.pending_directory_entries
-                    .push((DirectoryKind::Db, dbdir.dbdirs.len()));
+                self.pending_directory_entries.push((
+                    DirectoryKind::Db,
+                    MetricsUpdate::Set(dbdir.dbdirs.len() as u64),
+                ));
                 self.put(DBDIR_KEY, Value::Image(buf.into()));
-
-                // and create the RelDirectory
-                RelDirectory::default()
+                false
             } else {
-                // reldir already exists, fetch it
-                RelDirectory::des(&self.get(rel_dir_key, ctx).await.context("read db")?)
-                    .context("deserialize db")?
+                true
             };
+
+        let rel_dir_key = rel_dir_to_key(rel.spcnode, rel.dbnode);
+        let mut rel_dir = if !dbdir_exists {
+            // Create the RelDirectory
+            RelDirectory::default()
+        } else {
+            // reldir already exists, fetch it
+            RelDirectory::des(&self.get(rel_dir_key, ctx).await.context("read db")?)
+                .context("deserialize db")?
+        };
 
         // Add the new relation to the rel directory entry, and write it back
         if !rel_dir.rels.insert((rel.relnode, rel.forknum)) {
             return Err(RelationError::AlreadyExists);
         }
 
-        self.pending_directory_entries
-            .push((DirectoryKind::Rel, rel_dir.rels.len()));
-
-        self.put(
-            rel_dir_key,
-            Value::Image(Bytes::from(
-                RelDirectory::ser(&rel_dir).context("serialize")?,
-            )),
-        );
-
+        if self.tline.get_rel_size_v2_enabled() {
+            let rel_dir_key = rel_tag_sparse_key(rel.spcnode, rel.dbnode, rel.relnode, rel.forknum);
+            // check if the rel_dir_key exists in v2
+            let val = self
+                .sparse_get(rel_dir_key, ctx)
+                .await
+                .map_err(|e| RelationError::Other(e.into()))?;
+            let val = RelDirExists::decode_option(val)
+                .map_err(|_| RelationError::Other(anyhow::anyhow!("invalid reldir key")))?;
+            if val == RelDirExists::Exists {
+                return Err(RelationError::AlreadyExists);
+            }
+            self.put(rel_dir_key, Value::Image(RelDirExists::Exists.encode()));
+            if !dbdir_exists {
+                self.pending_directory_entries
+                    .push((DirectoryKind::Rel, MetricsUpdate::Set(0)));
+                self.pending_directory_entries
+                    .push((DirectoryKind::RelV2, MetricsUpdate::Set(0)));
+                // We don't write `rel_dir_key -> rel_dir.rels` back to the storage in the v2 path unless it's the initial creation.
+                // TODO: if we have fully migrated to v2, no need to create this directory. Otherwise, there
+                // will be key not found errors if we don't create an empty one for rel_size_v2.
+                self.put(
+                    rel_dir_key,
+                    Value::Image(Bytes::from(
+                        RelDirectory::ser(&RelDirectory::default()).context("serialize")?,
+                    )),
+                );
+            }
+            self.pending_directory_entries
+                .push((DirectoryKind::RelV2, MetricsUpdate::Add(1)));
+        } else {
+            if !dbdir_exists {
+                self.pending_directory_entries
+                    .push((DirectoryKind::Rel, MetricsUpdate::Set(0)))
+            }
+            self.pending_directory_entries
+                .push((DirectoryKind::Rel, MetricsUpdate::Add(1)));
+            self.put(
+                rel_dir_key,
+                Value::Image(Bytes::from(
+                    RelDirectory::ser(&rel_dir).context("serialize")?,
+                )),
+            );
+        }
         // Put size
         let size_key = rel_size_to_key(rel);
         let buf = nblocks.to_le_bytes();
@@ -1896,9 +2031,34 @@ impl DatadirModification<'_> {
 
             let mut dirty = false;
             for rel_tag in rel_tags {
-                if dir.rels.remove(&(rel_tag.relnode, rel_tag.forknum)) {
+                let found = if dir.rels.remove(&(rel_tag.relnode, rel_tag.forknum)) {
+                    self.pending_directory_entries
+                        .push((DirectoryKind::Rel, MetricsUpdate::Sub(1)));
                     dirty = true;
+                    true
+                } else if self.tline.get_rel_size_v2_enabled() {
+                    // The rel is not found in the old reldir key, so we need to check the new sparse keyspace.
+                    // Note that a relation can only exist in one of the two keyspaces (guaranteed by the ingestion
+                    // logic).
+                    let key =
+                        rel_tag_sparse_key(spc_node, db_node, rel_tag.relnode, rel_tag.forknum);
+                    let val = RelDirExists::decode_option(self.sparse_get(key, ctx).await?)
+                        .map_err(|_| RelationError::Other(anyhow::anyhow!("invalid reldir key")))?;
+                    if val == RelDirExists::Exists {
+                        self.pending_directory_entries
+                            .push((DirectoryKind::RelV2, MetricsUpdate::Sub(1)));
+                        // put tombstone
+                        self.put(key, Value::Image(RelDirExists::Removed.encode()));
+                        // no need to set dirty to true
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
 
+                if found {
                     // update logical size
                     let size_key = rel_size_to_key(rel_tag);
                     let old_size = self.get(size_key, ctx).await?.get_u32_le();
@@ -1914,8 +2074,6 @@ impl DatadirModification<'_> {
 
             if dirty {
                 self.put(dir_key, Value::Image(Bytes::from(RelDirectory::ser(&dir)?)));
-                self.pending_directory_entries
-                    .push((DirectoryKind::Rel, dir.rels.len()));
             }
         }
 
@@ -1939,8 +2097,10 @@ impl DatadirModification<'_> {
         if !dir.segments.insert(segno) {
             anyhow::bail!("slru segment {kind:?}/{segno} already exists");
         }
-        self.pending_directory_entries
-            .push((DirectoryKind::SlruSegment(kind), dir.segments.len()));
+        self.pending_directory_entries.push((
+            DirectoryKind::SlruSegment(kind),
+            MetricsUpdate::Set(dir.segments.len() as u64),
+        ));
         self.put(
             dir_key,
             Value::Image(Bytes::from(SlruSegmentDirectory::ser(&dir)?)),
@@ -1987,8 +2147,10 @@ impl DatadirModification<'_> {
         if !dir.segments.remove(&segno) {
             warn!("slru segment {:?}/{} does not exist", kind, segno);
         }
-        self.pending_directory_entries
-            .push((DirectoryKind::SlruSegment(kind), dir.segments.len()));
+        self.pending_directory_entries.push((
+            DirectoryKind::SlruSegment(kind),
+            MetricsUpdate::Set(dir.segments.len() as u64),
+        ));
         self.put(
             dir_key,
             Value::Image(Bytes::from(SlruSegmentDirectory::ser(&dir)?)),
@@ -2020,8 +2182,10 @@ impl DatadirModification<'_> {
             if !dir.xids.remove(&xid) {
                 warn!("twophase file for xid {} does not exist", xid);
             }
-            self.pending_directory_entries
-                .push((DirectoryKind::TwoPhase, dir.xids.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::TwoPhase,
+                MetricsUpdate::Set(dir.xids.len() as u64),
+            ));
             Bytes::from(TwoPhaseDirectoryV17::ser(&dir)?)
         } else {
             let xid: u32 = u32::try_from(xid)?;
@@ -2030,8 +2194,10 @@ impl DatadirModification<'_> {
             if !dir.xids.remove(&xid) {
                 warn!("twophase file for xid {} does not exist", xid);
             }
-            self.pending_directory_entries
-                .push((DirectoryKind::TwoPhase, dir.xids.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::TwoPhase,
+                MetricsUpdate::Set(dir.xids.len() as u64),
+            ));
             Bytes::from(TwoPhaseDirectory::ser(&dir)?)
         };
         self.put(TWOPHASEDIR_KEY, Value::Image(newdirbuf));
@@ -2147,7 +2313,7 @@ impl DatadirModification<'_> {
         }
 
         for (kind, count) in std::mem::take(&mut self.pending_directory_entries) {
-            writer.update_directory_entries_count(kind, count as u64);
+            writer.update_directory_entries_count(kind, count);
         }
 
         Ok(())
@@ -2233,7 +2399,7 @@ impl DatadirModification<'_> {
         }
 
         for (kind, count) in std::mem::take(&mut self.pending_directory_entries) {
-            writer.update_directory_entries_count(kind, count as u64);
+            writer.update_directory_entries_count(kind, count);
         }
 
         self.pending_metadata_bytes = 0;
@@ -2295,6 +2461,22 @@ impl DatadirModification<'_> {
         // Metadata page cache miss, or we're reading a data page.
         let lsn = Lsn::max(self.tline.get_last_record_lsn(), self.lsn);
         self.tline.get(key, lsn, ctx).await
+    }
+
+    /// Get a key from the sparse keyspace. Automatically converts the missing key error
+    /// and the empty value into None.
+    async fn sparse_get(
+        &self,
+        key: Key,
+        ctx: &RequestContext,
+    ) -> Result<Option<Bytes>, PageReconstructError> {
+        let val = self.get(key, ctx).await;
+        match val {
+            Ok(val) if val.is_empty() => Ok(None),
+            Ok(val) => Ok(Some(val)),
+            Err(PageReconstructError::MissingKey(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     fn put(&mut self, key: Key, val: Value) {
@@ -2379,6 +2561,23 @@ impl Version<'_> {
         }
     }
 
+    /// Get a key from the sparse keyspace. Automatically converts the missing key error
+    /// and the empty value into None.
+    async fn sparse_get(
+        &self,
+        timeline: &Timeline,
+        key: Key,
+        ctx: &RequestContext,
+    ) -> Result<Option<Bytes>, PageReconstructError> {
+        let val = self.get(timeline, key, ctx).await;
+        match val {
+            Ok(val) if val.is_empty() => Ok(None),
+            Ok(val) => Ok(Some(val)),
+            Err(PageReconstructError::MissingKey(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     fn get_lsn(&self) -> Lsn {
         match self {
             Version::Lsn(lsn) => *lsn,
@@ -2438,6 +2637,7 @@ pub(crate) enum DirectoryKind {
     Rel,
     AuxFiles,
     SlruSegment(SlruKind),
+    RelV2,
 }
 
 impl DirectoryKind {

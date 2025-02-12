@@ -481,7 +481,8 @@ def test_pageserver_metrics_many_relations(neon_env_builder: NeonEnvBuilder):
     counts = timeline_detail["directory_entries_counts"]
     assert counts
     log.info(f"directory counts: {counts}")
-    assert counts[2] > COUNT_AT_LEAST_EXPECTED
+    # We need to add up reldir v1 + v2 counts
+    assert counts[2] + counts[7] > COUNT_AT_LEAST_EXPECTED
 
 
 def test_timelines_parallel_endpoints(neon_simple_env: NeonEnv):
