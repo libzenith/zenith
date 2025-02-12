@@ -22,6 +22,7 @@
 #include "neon_pgversioncompat.h"
 
 #include "access/parallel.h"
+#include "access/xlog.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "pagestore_client.h"
@@ -40,12 +41,16 @@
 #include "utils/dynahash.h"
 #include "utils/guc.h"
 
+#if PG_VERSION_NUM >= 150000
+#include "access/xlogrecovery.h"
+#endif
+
 #include "hll.h"
 #include "bitmap.h"
 #include "neon.h"
 #include "neon_perf_counters.h"
 
-#define CriticalAssert(cond) do if (!(cond)) elog(PANIC, "Assertion %s failed at %s:%d: ", #cond, __FILE__, __LINE__); while (0)
+#define CriticalAssert(cond) do if (!(cond)) elog(PANIC, "LFC: assertion %s failed at %s:%d: ", #cond, __FILE__, __LINE__); while (0)
 
 /*
  * Local file cache is used to temporary store relations pages in local file system.
@@ -93,7 +98,23 @@
 #define MB					((uint64)1024*1024)
 
 #define SIZE_MB_TO_CHUNKS(size) ((uint32)((size) * MB / BLCKSZ / BLOCKS_PER_CHUNK))
-#define CHUNK_BITMAP_SIZE ((BLOCKS_PER_CHUNK + 31) / 32)
+
+/*
+ * Blocks are read or written to LFC file outside LFC critical section.
+ * To synchronize access to such block, writer set state of such block to PENDING.
+ * If some other backend (read or writer) see PENDING status, it change it to REQUESTED and start
+ * waiting until status is changed on conditional variable.
+ * When writer completes is operation, it checks if status is REQUESTED and if so, broadcast conditional variable,
+ * waking up all backend waiting for access to this block.
+ */
+typedef enum FileCacheBlockState
+{
+	UNAVAILABLE, /* block is not present in cache */
+	AVAILABLE,   /* block can be used */
+	PENDING,     /* block is loaded */
+    REQUESTED    /* some other backend is waiting for block to be loaded */
+} FileCacheBlockState;
+
 
 typedef struct FileCacheEntry
 {
@@ -101,9 +122,15 @@ typedef struct FileCacheEntry
 	uint32		hash;
 	uint32		offset;
 	uint32		access_count;
-	uint32		bitmap[CHUNK_BITMAP_SIZE];
+	uint32		state[(BLOCKS_PER_CHUNK + 31) / 32 * 2]; /* two bits per block */
 	dlist_node	list_node;		/* LRU/holes list node */
 } FileCacheEntry;
+
+#define GET_STATE(entry, i) (((entry)->state[(i) / 16] >> ((i) % 16 * 2)) & 3)
+#define SET_STATE(entry, i, new_state) (entry)->state[(i) / 16] = ((entry)->state[(i) / 16] & ~(3 << ((i) % 16 * 2))) | ((new_state) << ((i) % 16 * 2))
+
+#define N_COND_VARS 	64
+#define CV_WAIT_TIMEOUT	10
 
 typedef struct FileCacheControl
 {
@@ -118,11 +145,16 @@ typedef struct FileCacheControl
 	uint64		writes;			/* number of writes issued */
 	uint64		time_read;		/* time spent reading (us) */
 	uint64		time_write;		/* time spent writing (us) */
+	uint64		resizes;        /* number of LFC resizes   */
+	uint64      evicted_pages;	/* number of evicted pages */
 	dlist_head	lru;			/* double linked list for LRU replacement
 								 * algorithm */
 	dlist_head  holes;          /* double linked list of punched holes */
 	HyperLogLogState wss_estimation; /* estimation of working set size */
+	ConditionVariable cv[N_COND_VARS]; /* turnstile of condition variables */
 } FileCacheControl;
+
+bool lfc_store_prefetch_result;
 
 static HTAB *lfc_hash;
 static int	lfc_desc = 0;
@@ -149,7 +181,7 @@ lfc_disable(char const *op)
 {
 	int			fd;
 
-	elog(WARNING, "Failed to %s local file cache at %s: %m, disabling local file cache", op, lfc_path);
+	elog(WARNING, "LFC: failed to %s local file cache at %s: %m, disabling local file cache", op, lfc_path);
 
 	/* Invalidate hash */
 	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
@@ -184,8 +216,11 @@ lfc_disable(char const *op)
 			pgstat_report_wait_end();
 
 			if (rc < 0)
-				elog(WARNING, "Failed to truncate local file cache %s: %m", lfc_path);
+				elog(WARNING, "LFC: failed to truncate local file cache %s: %m", lfc_path);
 		}
+		/* Wakeup waiting backends */
+		for (int i = 0; i < N_COND_VARS; i++)
+			ConditionVariableBroadcast(&lfc_ctl->cv[i]);
 	}
 
 	/*
@@ -196,7 +231,7 @@ lfc_disable(char const *op)
 
 	fd = BasicOpenFile(lfc_path, O_RDWR | O_CREAT | O_TRUNC);
 	if (fd < 0)
-		elog(WARNING, "Failed to recreate local file cache %s: %m", lfc_path);
+		elog(WARNING, "LFC: failed to recreate local file cache %s: %m", lfc_path);
 	else
 		close(fd);
 
@@ -220,10 +255,8 @@ lfc_maybe_disabled(void)
 static bool
 lfc_ensure_opened(void)
 {
-	bool		enabled = !lfc_maybe_disabled();
-
 	/* Open cache file if not done yet */
-	if (lfc_desc <= 0 && enabled)
+	if (lfc_desc <= 0)
 	{
 		lfc_desc = BasicOpenFile(lfc_path, O_RDWR);
 
@@ -233,7 +266,7 @@ lfc_ensure_opened(void)
 			return false;
 		}
 	}
-	return enabled;
+	return true;
 }
 
 static void
@@ -267,14 +300,7 @@ lfc_shmem_startup(void)
 								 n_chunks + 1, n_chunks + 1,
 								 &info,
 								 HASH_ELEM | HASH_BLOBS);
-		lfc_ctl->generation = 0;
-		lfc_ctl->size = 0;
-		lfc_ctl->used = 0;
-		lfc_ctl->hits = 0;
-		lfc_ctl->misses = 0;
-		lfc_ctl->writes = 0;
-		lfc_ctl->time_read = 0;
-		lfc_ctl->time_write = 0;
+		memset(lfc_ctl, 0, sizeof(FileCacheControl));
 		dlist_init(&lfc_ctl->lru);
 		dlist_init(&lfc_ctl->holes);
 
@@ -285,7 +311,7 @@ lfc_shmem_startup(void)
 		fd = BasicOpenFile(lfc_path, O_RDWR | O_CREAT | O_TRUNC);
 		if (fd < 0)
 		{
-			elog(WARNING, "Failed to create local file cache %s: %m", lfc_path);
+			elog(WARNING, "LFC: failed to create local file cache %s: %m", lfc_path);
 			lfc_ctl->limit = 0;
 		}
 		else
@@ -293,6 +319,11 @@ lfc_shmem_startup(void)
 			close(fd);
 			lfc_ctl->limit = SIZE_MB_TO_CHUNKS(lfc_size_limit);
 		}
+
+		/* Initialize turnstile of condition variables */
+		for (int i = 0; i < N_COND_VARS; i++)
+			ConditionVariableInit(&lfc_ctl->cv[i]);
+
 	}
 	LWLockRelease(AddinShmemInitLock);
 }
@@ -327,7 +358,7 @@ lfc_check_limit_hook(int *newval, void **extra, GucSource source)
 {
 	if (*newval > lfc_max_size)
 	{
-		elog(ERROR, "neon.file_cache_size_limit can not be larger than neon.max_file_cache_size");
+		elog(ERROR, "LFC: neon.file_cache_size_limit can not be larger than neon.max_file_cache_size");
 		return false;
 	}
 	return true;
@@ -345,6 +376,11 @@ lfc_change_limit_hook(int newval, void *extra)
 		return;
 
 	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+
+	if (lfc_ctl->limit != new_size)
+	{
+		lfc_ctl->resizes += 1;
+	}
 
 	while (new_size < lfc_ctl->used && !dlist_is_empty(&lfc_ctl->lru))
 	{
@@ -367,7 +403,9 @@ lfc_change_limit_hook(int newval, void *extra)
 		/* We remove the old entry, and re-enter a hole to the hash table */
 		for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
 		{
-			lfc_ctl->used_pages -= (victim->bitmap[i >> 5] >> (i & 31)) & 1;
+			bool is_page_cached = GET_STATE(victim, i) == AVAILABLE;
+			lfc_ctl->used_pages -= is_page_cached;
+			lfc_ctl->evicted_pages += is_page_cached;
 		}
 		hash_search_with_hash_value(lfc_hash, &victim->key, victim->hash, HASH_REMOVE, NULL);
 
@@ -402,6 +440,17 @@ lfc_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		neon_log(ERROR, "Neon module should be loaded via shared_preload_libraries");
 
+
+	DefineCustomBoolVariable("neon.store_prefetch_result_in_lfc",
+							"Immediately store received prefetch result in LFC",
+							NULL,
+							&lfc_store_prefetch_result,
+							false,
+							PGC_SUSET,
+							0,
+							NULL,
+							NULL,
+							NULL);
 
 	DefineCustomIntVariable("neon.max_file_cache_size",
 							"Maximal size of Neon local file cache",
@@ -480,7 +529,7 @@ lfc_cache_contains(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno)
 	if (LFC_ENABLED())
 	{
 		entry = hash_search_with_hash_value(lfc_hash, &tag, hash, HASH_FIND, NULL);
-		found = entry != NULL && (entry->bitmap[chunk_offs >> 5] & ((uint32)1 << (chunk_offs & 31))) != 0;
+		found = entry != NULL && GET_STATE(entry, chunk_offs) != UNAVAILABLE;
 	}
 	LWLockRelease(lfc_lock);
 	return found;
@@ -529,8 +578,7 @@ lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		{
 			for (; chunk_offs < BLOCKS_PER_CHUNK && i < nblocks; chunk_offs++, i++)
 			{
-				if ((entry->bitmap[chunk_offs >> 5] & 
-					 ((uint32)1 << (chunk_offs & 31))) != 0)
+				if (GET_STATE(entry, chunk_offs) != UNAVAILABLE)
 				{
 					BITMAP_SET(bitmap, i);
 					found++;
@@ -541,7 +589,6 @@ lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		{
 			i += this_chunk;
 		}
-
 		/*
 		 * Break out of the iteration before doing expensive stuff for
 		 * a next iteration
@@ -578,87 +625,6 @@ lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 }
 
 /*
- * Evict a page (if present) from the local file cache
- */
-void
-lfc_evict(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno)
-{
-	BufferTag	tag;
-	FileCacheEntry *entry;
-	bool		found;
-	int			chunk_offs = blkno & (BLOCKS_PER_CHUNK - 1);
-	uint32		hash;
-
-	if (lfc_maybe_disabled())	/* fast exit if file cache is disabled */
-		return;
-
-	CopyNRelFileInfoToBufTag(tag, rinfo);
-	tag.forkNum = forkNum;
-	tag.blockNum = (blkno & ~(BLOCKS_PER_CHUNK - 1));
-
-	CriticalAssert(BufTagGetRelNumber(&tag) != InvalidRelFileNumber);
-	hash = get_hash_value(lfc_hash, &tag);
-
-	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
-
-	if (!LFC_ENABLED())
-	{
-		LWLockRelease(lfc_lock);
-		return;
-	}
-
-	entry = hash_search_with_hash_value(lfc_hash, &tag, hash, HASH_FIND, &found);
-
-	if (!found)
-	{
-		/* nothing to do */
-		LWLockRelease(lfc_lock);
-		return;
-	}
-
-	/* remove the page from the cache */
-	entry->bitmap[chunk_offs >> 5] &= ~((uint32)1 << (chunk_offs & (32 - 1)));
-
-	if (entry->access_count == 0)
-	{
-		/*
-		 * If the chunk has no live entries, we can position the chunk to be
-		 * recycled first.
-		 */
-		if (entry->bitmap[chunk_offs >> 5] == 0)
-		{
-			bool		has_remaining_pages = false;
-
-			for (int i = 0; i < CHUNK_BITMAP_SIZE; i++)
-			{
-				if (entry->bitmap[i] != 0)
-				{
-					has_remaining_pages = true;
-					break;
-				}
-			}
-
-			/*
-			 * Put the entry at the position that is first to be reclaimed when we
-			 * have no cached pages remaining in the chunk
-			 */
-			if (!has_remaining_pages)
-			{
-				dlist_delete(&entry->list_node);
-				dlist_push_head(&lfc_ctl->lru, &entry->list_node);
-			}
-		}
-	}
-
-	/*
-	 * Done: apart from empty chunks, we don't move chunks in the LRU when
-	 * they're empty because eviction isn't usage.
-	 */
-
-	LWLockRelease(lfc_lock);
-}
-
-/*
  * Try to read pages from local cache.
  * Returns the number of pages read from the local cache, and sets bits in
  * 'read' for the pages which were read. This may scribble over buffers not
@@ -685,17 +651,17 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 	int			buf_offset = 0;
 
 	if (lfc_maybe_disabled())	/* fast exit if file cache is disabled */
-		return 0;
+		return -1;
 
 	if (!lfc_ensure_opened())
-		return 0;
+		return -1;
 
 	CopyNRelFileInfoToBufTag(tag, rinfo);
 	tag.forkNum = forkNum;
 
 	CriticalAssert(BufTagGetRelNumber(&tag) != InvalidRelFileNumber);
 
-	/* 
+	/*
 	 * For every chunk that has blocks we're interested in, we
 	 * 1. get the chunk header
 	 * 2. Check if the chunk actually has the blocks we're interested in
@@ -712,16 +678,29 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		int		iteration_hits = 0;
 		int		iteration_misses = 0;
 		uint64	io_time_us = 0;
+		int     n_blocks_to_read = 0;
+		ConditionVariable* cv;
+
 		Assert(blocks_in_chunk > 0);
 
 		for (int i = 0; i < blocks_in_chunk; i++)
 		{
+			n_blocks_to_read += (BITMAP_ISSET(mask, buf_offset + i) != 0);
 			iov[i].iov_base = buffers[buf_offset + i];
 			iov[i].iov_len = BLCKSZ;
+			BITMAP_CLR(mask,  buf_offset + i);
+		}
+		if (n_blocks_to_read == 0)
+		{
+			buf_offset += blocks_in_chunk;
+			nblocks -= blocks_in_chunk;
+			blkno += blocks_in_chunk;
+			continue;
 		}
 
 		tag.blockNum = blkno - chunk_offs;
 		hash = get_hash_value(lfc_hash, &tag);
+		cv = &lfc_ctl->cv[hash % N_COND_VARS];
 
 		LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
 
@@ -763,15 +742,32 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		generation = lfc_ctl->generation;
 		entry_offset = entry->offset;
 
-		LWLockRelease(lfc_lock);
-
 		for (int i = 0; i < blocks_in_chunk; i++)
 		{
-			/*
-			 * If the page is valid, we consider it "read".
-			 * All other pages will be fetched separately by the next cache
-			 */
-			if (entry->bitmap[(chunk_offs + i) / 32] & ((uint32)1 << ((chunk_offs + i) % 32)))
+			FileCacheBlockState state = UNAVAILABLE;
+			bool sleeping = false;
+			while (lfc_ctl->generation == generation)
+			{
+				state = GET_STATE(entry, chunk_offs + i);
+				if (state == PENDING) {
+					SET_STATE(entry, chunk_offs + i, REQUESTED);
+				} else if (state != REQUESTED) {
+					break;
+				}
+				if (!sleeping)
+				{
+					ConditionVariablePrepareToSleep(cv);
+					sleeping = true;
+				}
+				LWLockRelease(lfc_lock);
+				ConditionVariableTimedSleep(cv, CV_WAIT_TIMEOUT, WAIT_EVENT_NEON_LFC_CV_WAIT);
+				LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+			}
+			if (sleeping)
+			{
+				ConditionVariableCancelSleep();
+			}
+			if (state == AVAILABLE)
 			{
 				BITMAP_SET(mask, buf_offset + i);
 				iteration_hits++;
@@ -779,6 +775,7 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 			else
 				iteration_misses++;
 		}
+		LWLockRelease(lfc_lock);
 
 		Assert(iteration_hits + iteration_misses > 0);
 
@@ -836,6 +833,248 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 }
 
 /*
+ * Initialize new LFC hash entry, perform eviction if needed.
+ * Returns false if there are no unpinned entries and chunk can not be added.
+ */
+static bool
+lfc_init_new_entry(FileCacheEntry* entry, uint32 hash)
+{
+	/*-----------
+	 * If the chunk wasn't already in the LFC then we have these
+	 * options, in order of preference:
+	 *
+	 * Unless there is no space available, we can:
+	 *  1. Use an entry from the `holes` list, and
+	 *  2. Create a new entry.
+	 * We can always, regardless of space in the LFC:
+	 *  3. evict an entry from LRU, and
+	 *  4. ignore the write operation (the least favorite option)
+	 */
+	if (lfc_ctl->used < lfc_ctl->limit)
+	{
+		if (!dlist_is_empty(&lfc_ctl->holes))
+		{
+			/* We can reuse a hole that was left behind when the LFC was shrunk previously */
+			FileCacheEntry *hole = dlist_container(FileCacheEntry, list_node,
+												   dlist_pop_head_node(&lfc_ctl->holes));
+			uint32 offset = hole->offset;
+			bool hole_found;
+
+			hash_search_with_hash_value(lfc_hash, &hole->key,
+										hole->hash, HASH_REMOVE, &hole_found);
+			CriticalAssert(hole_found);
+
+			lfc_ctl->used += 1;
+			entry->offset = offset;			/* reuse the hole */
+		}
+		else
+		{
+			lfc_ctl->used += 1;
+			entry->offset = lfc_ctl->size++;/* allocate new chunk at end
+											 * of file */
+		}
+	}
+	/*
+	 * We've already used up all allocated LFC entries.
+	 *
+	 * If we can clear an entry from the LRU, do that.
+	 * If we can't (e.g. because all other slots are being accessed)
+	 * then we will remove this entry from the hash and continue
+	 * on to the next chunk, as we may not exceed the limit.
+	 */
+	else if (!dlist_is_empty(&lfc_ctl->lru))
+	{
+		/* Cache overflow: evict least recently used chunk */
+		FileCacheEntry *victim = dlist_container(FileCacheEntry, list_node,
+												 dlist_pop_head_node(&lfc_ctl->lru));
+
+		for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
+		{
+			bool is_page_cached = GET_STATE(victim, i) == AVAILABLE;
+			lfc_ctl->used_pages -= is_page_cached;
+			lfc_ctl->evicted_pages += is_page_cached;
+		}
+
+		CriticalAssert(victim->access_count == 0);
+		entry->offset = victim->offset; /* grab victim's chunk */
+		hash_search_with_hash_value(lfc_hash, &victim->key,
+									victim->hash, HASH_REMOVE, NULL);
+		neon_log(DEBUG2, "Swap file cache page");
+	}
+	else
+	{
+		/* Can't add this chunk - we don't have the space for it */
+		hash_search_with_hash_value(lfc_hash, &entry->key, hash,
+									HASH_REMOVE, NULL);
+
+		return false;
+	}
+
+	entry->access_count = 1;
+	entry->hash = hash;
+
+	for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
+		SET_STATE(entry, i, UNAVAILABLE);
+
+	return true;
+}
+
+/*
+ * Store received prefetch result in LFC cache.
+ * Unlike lfc_read/lfc_write this call is is not protected by shared buffer lock.
+ * So we should be ready that other backends will try to concurrently read or write this block.
+ * We do not store prefetched block if it already exists in LFC or it's not_modified_since LSN is smaller
+ * than current last written LSN (LwLSN).
+ *
+ * We can enforce correctness of storing page in LFC by the following steps:
+ * 1. Check under LFC lock that page in not present in LFC.
+ * 2. Check under LFC lock that LwLSN is not changed since prefetch request time (not_modified_since).
+ * 3. Change page state to "Pending" under LFC lock to prevent all other backends to read or write this
+ *    pages until this write is completed.
+ * 4. Assume that some other backend creates new image of the page without reading it
+ *    (because reads will be blocked because of 2). This version of the page is stored in shared buffer.
+ *    Any attempt to throw away this page from shared buffer will be blocked, because Postgres first
+ *    needs to save dirty page and write will be blocked because of 2.
+ *    So any backend trying to access this page, will take it from shared buffer without accessing
+ *    SMGR and LFC.
+ * 5. After write completion we once again obtain LFC lock and wake-up all waiting backends.
+ *    If there is some backend waiting to write new image of the page (4) then now it will be able to
+ *    do it,overwriting old (prefetched) page image. As far as this write will be completed before
+ *    shared buffer can be reassigned, not other backend can see old page image.
+*/
+bool
+lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
+			 const void* buffer, XLogRecPtr lsn)
+{
+	BufferTag	tag;
+	FileCacheEntry *entry;
+	ssize_t		rc;
+	bool		found;
+	uint32		hash;
+	uint64		generation;
+	uint32		entry_offset;
+	instr_time io_start, io_end;
+	ConditionVariable* cv;
+	FileCacheBlockState state;
+	XLogRecPtr lwlsn;
+
+	int		chunk_offs = blkno & (BLOCKS_PER_CHUNK - 1);
+
+	if (lfc_maybe_disabled())	/* fast exit if file cache is disabled */
+		return false;
+
+	if (!lfc_ensure_opened())
+		return false;
+
+	CopyNRelFileInfoToBufTag(tag, rinfo);
+	tag.forkNum = forknum;
+
+	CriticalAssert(BufTagGetRelNumber(&tag) != InvalidRelFileNumber);
+
+	tag.blockNum = blkno & ~(BLOCKS_PER_CHUNK - 1);
+	hash = get_hash_value(lfc_hash, &tag);
+	cv = &lfc_ctl->cv[hash % N_COND_VARS];
+
+	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+
+	if (!LFC_ENABLED())
+	{
+		LWLockRelease(lfc_lock);
+		return false;
+	}
+	lwlsn = GetLastWrittenLSN(rinfo, forknum, blkno);
+	if (lwlsn > lsn)
+	{
+		elog(DEBUG1, "Skip LFC write for %d because LwLSN=%X/%X is greater than not_nodified_since LSN %X/%X",
+			 blkno, LSN_FORMAT_ARGS(lwlsn), LSN_FORMAT_ARGS(lsn));
+		LWLockRelease(lfc_lock);
+		return false;
+	}
+
+	entry = hash_search_with_hash_value(lfc_hash, &tag, hash, HASH_ENTER, &found);
+
+	if (found)
+	{
+		state = GET_STATE(entry, chunk_offs);
+		if (state != UNAVAILABLE) {
+			/* Do not rewrite existed LFC entry */
+			LWLockRelease(lfc_lock);
+			return false;
+		}
+		/*
+		 * Unlink entry from LRU list to pin it for the duration of IO
+		 * operation
+		 */
+		if (entry->access_count++ == 0)
+			dlist_delete(&entry->list_node);
+	}
+	else
+	{
+		if (!lfc_init_new_entry(entry, hash))
+		{
+			/*
+			 * We can't process this chunk due to lack of space in LFC,
+			 * so skip to the next one
+			 */
+			LWLockRelease(lfc_lock);
+			return false;
+		}
+	}
+
+	generation = lfc_ctl->generation;
+	entry_offset = entry->offset;
+
+	SET_STATE(entry, chunk_offs, PENDING);
+
+	LWLockRelease(lfc_lock);
+
+	pgstat_report_wait_start(WAIT_EVENT_NEON_LFC_WRITE);
+	INSTR_TIME_SET_CURRENT(io_start);
+	rc = pwrite(lfc_desc, buffer, BLCKSZ,
+				((off_t) entry_offset * BLOCKS_PER_CHUNK + chunk_offs) * BLCKSZ);
+	INSTR_TIME_SET_CURRENT(io_end);
+	pgstat_report_wait_end();
+
+	if (rc != BLCKSZ)
+	{
+		lfc_disable("write");
+	}
+	else
+	{
+		LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+
+		if (lfc_ctl->generation == generation)
+		{
+			uint64	time_spent_us;
+			CriticalAssert(LFC_ENABLED());
+			/* Place entry to the head of LRU list */
+			CriticalAssert(entry->access_count > 0);
+
+			lfc_ctl->writes += 1;
+			INSTR_TIME_SUBTRACT(io_start, io_end);
+			time_spent_us = INSTR_TIME_GET_MICROSEC(io_start);
+			lfc_ctl->time_write += time_spent_us;
+			inc_page_cache_write_wait(time_spent_us);
+
+			if (--entry->access_count == 0)
+				dlist_push_tail(&lfc_ctl->lru, &entry->list_node);
+
+			state = GET_STATE(entry, chunk_offs);
+			if (state == REQUESTED) {
+				ConditionVariableBroadcast(cv);
+			}
+			if (state != AVAILABLE)
+			{
+				lfc_ctl->used_pages += 1;
+				SET_STATE(entry, chunk_offs, AVAILABLE);
+			}
+		}
+		LWLockRelease(lfc_lock);
+	}
+	return true;
+}
+
+/*
  * Put page in local file cache.
  * If cache is full then evict some other page.
  */
@@ -863,7 +1102,15 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 
 	CriticalAssert(BufTagGetRelNumber(&tag) != InvalidRelFileNumber);
 
-	/* 
+	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+
+	if (!LFC_ENABLED())
+	{
+		LWLockRelease(lfc_lock);
+		return;
+	}
+
+	/*
 	 * For every chunk that has blocks we're interested in, we
 	 * 1. get the chunk header
 	 * 2. Check if the chunk actually has the blocks we're interested in
@@ -878,6 +1125,8 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		int		chunk_offs = blkno & (BLOCKS_PER_CHUNK - 1);
 		int		blocks_in_chunk = Min(nblocks, BLOCKS_PER_CHUNK - (blkno % BLOCKS_PER_CHUNK));
 		instr_time io_start, io_end;
+		ConditionVariable* cv;
+
 		Assert(blocks_in_chunk > 0);
 
 		for (int i = 0; i < blocks_in_chunk; i++)
@@ -888,14 +1137,7 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 
 		tag.blockNum = blkno & ~(BLOCKS_PER_CHUNK - 1);
 		hash = get_hash_value(lfc_hash, &tag);
-
-		LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
-
-		if (!LFC_ENABLED())
-		{
-			LWLockRelease(lfc_lock);
-			return;
-		}
+		cv = &lfc_ctl->cv[hash % N_COND_VARS];
 
 		entry = hash_search_with_hash_value(lfc_hash, &tag, hash, HASH_ENTER, &found);
 
@@ -908,92 +1150,51 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 			if (entry->access_count++ == 0)
 				dlist_delete(&entry->list_node);
 		}
-		/*-----------
-		 * If the chunk wasn't already in the LFC then we have these
-		 * options, in order of preference:
-		 *
-		 * Unless there is no space available, we can:
-		 *  1. Use an entry from the `holes` list, and
-		 *  2. Create a new entry.
-		 * We can always, regardless of space in the LFC:
-		 *  3. evict an entry from LRU, and
-		 *  4. ignore the write operation (the least favorite option)
-		 */
-		else if (lfc_ctl->used < lfc_ctl->limit)
-		{
-			if (!dlist_is_empty(&lfc_ctl->holes))
-			{
-				/* We can reuse a hole that was left behind when the LFC was shrunk previously */
-				FileCacheEntry *hole = dlist_container(FileCacheEntry, list_node,
-													   dlist_pop_head_node(&lfc_ctl->holes));
-				uint32 offset = hole->offset;
-				bool hole_found;
-
-				hash_search_with_hash_value(lfc_hash, &hole->key,
-											hole->hash, HASH_REMOVE, &hole_found);
-				CriticalAssert(hole_found);
-
-				lfc_ctl->used += 1;
-				entry->offset = offset;			/* reuse the hole */
-			}
-			else
-			{
-				lfc_ctl->used += 1;
-				entry->offset = lfc_ctl->size++;/* allocate new chunk at end
-												 * of file */
-			}
-		}
-		/*
-		 * We've already used up all allocated LFC entries.
-		 *
-		 * If we can clear an entry from the LRU, do that.
-		 * If we can't (e.g. because all other slots are being accessed)
-		 * then we will remove this entry from the hash and continue
-		 * on to the next chunk, as we may not exceed the limit.
-		 */
-		else if (!dlist_is_empty(&lfc_ctl->lru))
-		{
-			/* Cache overflow: evict least recently used chunk */
-			FileCacheEntry *victim = dlist_container(FileCacheEntry, list_node,
-													 dlist_pop_head_node(&lfc_ctl->lru));
-
-			for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
-			{
-				lfc_ctl->used_pages -= (victim->bitmap[i >> 5] >> (i & 31)) & 1;
-			}
-
-			CriticalAssert(victim->access_count == 0);
-			entry->offset = victim->offset; /* grab victim's chunk */
-			hash_search_with_hash_value(lfc_hash, &victim->key,
-										victim->hash, HASH_REMOVE, NULL);
-			neon_log(DEBUG2, "Swap file cache page");
-		}
 		else
 		{
-			/* Can't add this chunk - we don't have the space for it */
-			hash_search_with_hash_value(lfc_hash, &entry->key, hash,
-										HASH_REMOVE, NULL);
-
-			/*
-			 * We can't process this chunk due to lack of space in LFC,
-			 * so skip to the next one
-			 */
-			LWLockRelease(lfc_lock);
-			blkno += blocks_in_chunk;
-			buf_offset += blocks_in_chunk;
-			nblocks -= blocks_in_chunk;
-			continue;
-		}
-
-		if (!found)
-		{
-			entry->access_count = 1;
-			entry->hash = hash;
-			memset(entry->bitmap, 0, sizeof entry->bitmap);
+			if (!lfc_init_new_entry(entry, hash))
+			{
+				/*
+				 * We can't process this chunk due to lack of space in LFC,
+				 * so skip to the next one
+				 */
+				blkno += blocks_in_chunk;
+				buf_offset += blocks_in_chunk;
+				nblocks -= blocks_in_chunk;
+				continue;
+			}
 		}
 
 		generation = lfc_ctl->generation;
 		entry_offset = entry->offset;
+
+		for (int i = 0; i < blocks_in_chunk; i++)
+		{
+			FileCacheBlockState state = UNAVAILABLE;
+			bool sleeping = false;
+			while (lfc_ctl->generation == generation)
+			{
+				state = GET_STATE(entry, chunk_offs + i);
+				if (state == PENDING) {
+					SET_STATE(entry, chunk_offs + i, REQUESTED);
+				} else if (state != REQUESTED) {
+					SET_STATE(entry, chunk_offs + i, PENDING);
+					break;
+				}
+				if (!sleeping)
+				{
+					ConditionVariablePrepareToSleep(cv);
+					sleeping = true;
+				}
+				LWLockRelease(lfc_lock);
+				ConditionVariableTimedSleep(cv, CV_WAIT_TIMEOUT, WAIT_EVENT_NEON_LFC_CV_WAIT);
+				LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+			}
+			if (sleeping)
+			{
+				ConditionVariableCancelSleep();
+			}
+		}
 		LWLockRelease(lfc_lock);
 
 		pgstat_report_wait_start(WAIT_EVENT_NEON_LFC_WRITE);
@@ -1006,6 +1207,7 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		if (rc != BLCKSZ * blocks_in_chunk)
 		{
 			lfc_disable("write");
+			return;
 		}
 		else
 		{
@@ -1029,18 +1231,25 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 
 				for (int i = 0; i < blocks_in_chunk; i++)
 				{
-					lfc_ctl->used_pages += 1 - ((entry->bitmap[(chunk_offs + i) >> 5] >> ((chunk_offs + i) & 31)) & 1);
-					entry->bitmap[(chunk_offs + i) >> 5] |=
-						((uint32)1 << ((chunk_offs + i) & 31));
+					FileCacheBlockState state = GET_STATE(entry, chunk_offs + i);
+					if (state == REQUESTED)
+					{
+						ConditionVariableBroadcast(cv);
+					}
+					if (state != AVAILABLE)
+					{
+						lfc_ctl->used_pages += 1;
+						SET_STATE(entry, chunk_offs + i, AVAILABLE);
+					}
 				}
 			}
 
-			LWLockRelease(lfc_lock);
 		}
 		blkno += blocks_in_chunk;
 		buf_offset += blocks_in_chunk;
 		nblocks -= blocks_in_chunk;
 	}
+	LWLockRelease(lfc_lock);
 }
 
 typedef struct
@@ -1126,6 +1335,16 @@ neon_get_lfc_stats(PG_FUNCTION_ARGS)
 			key = "file_cache_used_pages";
 			if (lfc_ctl)
 				value = lfc_ctl->used_pages;
+			break;
+		case 6:
+			key = "file_cache_evicted_pages";
+			if (lfc_ctl)
+				value = lfc_ctl->evicted_pages;
+			break;
+		case 7:
+			key = "file_cache_limit";
+			if (lfc_ctl)
+				value = lfc_ctl->limit;
 			break;
 		default:
 			SRF_RETURN_DONE(funcctx);
@@ -1250,8 +1469,8 @@ local_cache_pages(PG_FUNCTION_ARGS)
 				hash_seq_init(&status, lfc_hash);
 				while ((entry = hash_seq_search(&status)) != NULL)
 				{
-					for (int i = 0; i < CHUNK_BITMAP_SIZE; i++)
-						n_pages += pg_popcount32(entry->bitmap[i]);
+					for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
+						n_pages += GET_STATE(entry, i) == AVAILABLE;
 				}
 			}
 		}
@@ -1279,7 +1498,7 @@ local_cache_pages(PG_FUNCTION_ARGS)
 			{
 				for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
 				{
-					if (entry->bitmap[i >> 5] & ((uint32)1 << (i & 31)))
+					if (GET_STATE(entry, i) == AVAILABLE)
 					{
 						fctx->record[n].pageoffs = entry->offset * BLOCKS_PER_CHUNK + i;
 						fctx->record[n].relfilenode = NInfoGetRelNumber(BufTagGetNRelFileInfo(entry->key));
