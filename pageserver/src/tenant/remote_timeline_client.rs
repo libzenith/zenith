@@ -2151,6 +2151,7 @@ impl RemoteTimelineClient {
                                 self.generation,
                                 delete.layers.clone(),
                             )
+                            .map(|_| ())
                             .map_err(|e| anyhow::anyhow!(e))
                     }
                 }

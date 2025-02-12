@@ -12,6 +12,7 @@
 
 use super::DeletionHeader;
 use super::DeletionList;
+use super::DeletionListSeq;
 use super::FlushOp;
 use super::ValidatorQueueMessage;
 
@@ -65,6 +66,9 @@ pub(super) struct DeletionOp {
     /// The _current_ generation of the Tenant shard attachment in which we are enqueuing
     /// this deletion.
     pub(super) generation: Generation,
+
+    /// Return channel for the `DeletionList::sequence` this deletion is included in.
+    pub(super) seq_tx: tokio::sync::oneshot::Sender<DeletionListSeq>,
 }
 
 #[derive(Debug)]
@@ -175,7 +179,7 @@ impl ListWriter {
     ///
     /// It is not an error for the header to not exist: we return None, and
     /// the caller should act as if validated_sequence is 0
-    async fn load_validated_sequence(&self) -> Result<Option<u64>, anyhow::Error> {
+    async fn load_validated_sequence(&self) -> Result<Option<DeletionListSeq>, anyhow::Error> {
         let header_path = self.conf.deletion_header_path();
         match tokio::fs::read(&header_path).await {
             Ok(header_bytes) => {
@@ -228,7 +232,7 @@ impl ListWriter {
 
         let temp_extension = format!(".{TEMP_SUFFIX}");
         let header_path = self.conf.deletion_header_path();
-        let mut seqs: Vec<u64> = Vec::new();
+        let mut seqs: Vec<DeletionListSeq> = Vec::new();
         while let Some(dentry) = dir.next_entry().await.fatal_err("read deletion dentry") {
             let file_name = dentry.file_name();
             let dentry_str = file_name.to_string_lossy();
@@ -433,6 +437,9 @@ impl ListWriter {
                             metrics::DELETION_QUEUE.unexpected_errors.inc();
                         }
                     }
+
+                    // Notify the client about the sequence number of this deletion.
+                    op.seq_tx.send(self.pending.sequence).ok();
                 }
                 ListWriterQueueMessage::Flush(op) => {
                     if self.pending.is_empty() {

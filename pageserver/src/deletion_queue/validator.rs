@@ -33,6 +33,7 @@ use crate::virtual_file::MaybeFatalIo;
 use super::deleter::DeleterMessage;
 use super::DeletionHeader;
 use super::DeletionList;
+use super::DeletionListSeq;
 use super::DeletionQueueError;
 use super::FlushOp;
 use super::VisibleLsnUpdates;
@@ -59,6 +60,9 @@ where
     conf: &'static PageServerConf,
     rx: tokio::sync::mpsc::Receiver<ValidatorQueueMessage>,
     tx: tokio::sync::mpsc::Sender<DeleterMessage>,
+
+    /// Notifies clients about the last executed DeletionList sequence number.
+    executed_tx: tokio::sync::watch::Sender<DeletionListSeq>,
 
     // Client for calling into control plane API for validation of deletes
     controller_upcall_client: Option<C>,
@@ -94,6 +98,7 @@ where
         conf: &'static PageServerConf,
         rx: tokio::sync::mpsc::Receiver<ValidatorQueueMessage>,
         tx: tokio::sync::mpsc::Sender<DeleterMessage>,
+        executed_tx: tokio::sync::watch::Sender<DeletionListSeq>,
         controller_upcall_client: Option<C>,
         lsn_table: Arc<std::sync::RwLock<VisibleLsnUpdates>>,
         cancel: CancellationToken,
@@ -102,6 +107,7 @@ where
             conf,
             rx,
             tx,
+            executed_tx,
             controller_upcall_client,
             lsn_table,
             pending_lists: Vec::new(),
@@ -161,7 +167,7 @@ where
             tenant_generations.keys().map(|k| (*k, true)).collect()
         };
 
-        let mut validated_sequence: Option<u64> = None;
+        let mut validated_sequence: Option<DeletionListSeq> = None;
 
         // Apply the validation results to the pending LSN updates
         for (tenant_id, tenant_lsn_state) in pending_lsn_updates.tenants {
@@ -295,6 +301,7 @@ where
     async fn cleanup_lists(&mut self, list_paths: Vec<Utf8PathBuf>) {
         for list_path in list_paths {
             debug!("Removing deletion list {list_path}");
+            // TODO: this needs to fsync the removal.
             tokio::fs::remove_file(&list_path)
                 .await
                 .fatal_err("remove deletion list");
@@ -324,6 +331,7 @@ where
         }
 
         // Drain `validated_lists` into the executor
+        let executed_seq = self.validated_lists.iter().map(|l| l.sequence).max();
         let mut executing_lists = Vec::new();
         for list in self.validated_lists.drain(..) {
             let list_path = self.conf.deletion_list_path(list.sequence);
@@ -339,6 +347,14 @@ where
 
         // Erase the deletion lists whose keys have all be deleted from remote storage
         self.cleanup_lists(executing_lists).await;
+
+        // Notify any waiters that the deletions have been executed.
+        //
+        // TODO: this will wait for all pending lists to be deleted. Consider making it more
+        // responsive by processing lists one by one.
+        if let Some(executed_seq) = executed_seq {
+            self.executed_tx.send_replace(executed_seq);
+        }
 
         Ok(())
     }

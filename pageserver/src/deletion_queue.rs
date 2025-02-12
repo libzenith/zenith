@@ -150,10 +150,30 @@ impl FlushOp {
     }
 }
 
+/// A DeletionNotify can be used to wait for a deletion to have been executed.
+#[derive(Debug)]
+pub struct DeletionNotify {
+    /// Receives the `DeletionListSeq` from `ListWriter` when scheduled in a `DeletionList`.
+    seq_rx: tokio::sync::oneshot::Receiver<DeletionListSeq>,
+    /// Watches the last executed `DeletionListSeq`.
+    executed_rx: tokio::sync::watch::Receiver<DeletionListSeq>,
+}
+
+impl DeletionNotify {
+    /// Waits for the deletion to have been executed.
+    pub async fn notify(mut self) {
+        let Ok(wait_seq) = self.seq_rx.await else {
+            return; // TODO return error
+        };
+        self.executed_rx.wait_for(|&seq| seq >= wait_seq).await.ok();
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DeletionQueueClient {
     tx: tokio::sync::mpsc::UnboundedSender<ListWriterQueueMessage>,
     executor_tx: tokio::sync::mpsc::Sender<DeleterMessage>,
+    executed_rx: tokio::sync::watch::Receiver<DeletionListSeq>,
 
     lsn_table: Arc<std::sync::RwLock<VisibleLsnUpdates>>,
 }
@@ -176,6 +196,9 @@ impl TenantDeletionList {
     }
 }
 
+/// Deletion list sequence number. Monotonically increasing, even across restarts.
+type DeletionListSeq = u64;
+
 /// Files ending with this suffix will be ignored and erased
 /// during recovery as startup.
 const TEMP_SUFFIX: &str = "tmp";
@@ -185,8 +208,9 @@ struct DeletionList {
     /// Serialization version, for future use
     version: u8,
 
-    /// Used for constructing a unique key for each deletion list we write out.
-    sequence: u64,
+    /// Used for constructing a unique key for each deletion list we write out, and to notify
+    /// callers when a deletion has been executed (and will not be retried later).
+    sequence: DeletionListSeq,
 
     /// To avoid repeating tenant/timeline IDs in every key, we store keys in
     /// nested HashMaps by TenantTimelineID.  Each Tenant only appears once
@@ -214,13 +238,13 @@ struct DeletionHeader {
 
     /// The highest sequence number (inclusive) that has been validated.  All deletion
     /// lists on disk with a sequence <= this value are safe to execute.
-    validated_sequence: u64,
+    validated_sequence: DeletionListSeq,
 }
 
 impl DeletionHeader {
     const VERSION_LATEST: u8 = 1;
 
-    fn new(validated_sequence: u64) -> Self {
+    fn new(validated_sequence: DeletionListSeq) -> Self {
         Self {
             version: Self::VERSION_LATEST,
             validated_sequence,
@@ -242,7 +266,7 @@ impl DeletionHeader {
 
 impl DeletionList {
     const VERSION_LATEST: u8 = 1;
-    fn new(sequence: u64) -> Self {
+    fn new(sequence: DeletionListSeq) -> Self {
         Self {
             version: Self::VERSION_LATEST,
             sequence,
@@ -460,6 +484,8 @@ impl DeletionQueueClient {
     /// layers until you're sure they can be deleted safely (i.e. remote metadata no longer
     /// references them).
     ///
+    /// The returned `DeletionNotify` can be used to wait for the deletion to execute.
+    ///
     /// The `current_generation` is the generation of this pageserver's current attachment.  The
     /// generations in `layers` are the generations in which those layers were written.
     pub(crate) fn push_layers(
@@ -468,11 +494,13 @@ impl DeletionQueueClient {
         timeline_id: TimelineId,
         current_generation: Generation,
         layers: Vec<(LayerName, LayerFileMetadata)>,
-    ) -> Result<(), DeletionQueueError> {
+    ) -> Result<DeletionNotify, DeletionQueueError> {
         // None generations are not valid for attached tenants: they must always be attached in
         // a known generation.  None generations are still permitted for layers in the index because
         // they may be historical.
         assert!(!current_generation.is_none());
+
+        let (seq_tx, seq_rx) = tokio::sync::oneshot::channel();
 
         metrics::DELETION_QUEUE
             .keys_submitted
@@ -485,8 +513,14 @@ impl DeletionQueueClient {
                 layers,
                 generation: current_generation,
                 objects: Vec::new(),
+                seq_tx,
             }),
-        )
+        )?;
+
+        Ok(DeletionNotify {
+            seq_rx,
+            executed_rx: self.executed_rx.clone(),
+        })
     }
 
     /// This is cancel-safe.  If you drop the future the flush may still happen in the background.
@@ -610,6 +644,10 @@ impl DeletionQueue {
         // happen in the backend (persistent), not in this queue.
         let (executor_tx, executor_rx) = tokio::sync::mpsc::channel(16);
 
+        // Notifies clients about executed deletions.
+        // TODO: recover the last sequence number on startup.
+        let (executed_tx, executed_rx) = tokio::sync::watch::channel(0);
+
         let lsn_table = Arc::new(std::sync::RwLock::new(VisibleLsnUpdates::new()));
 
         // The deletion queue has an independent cancellation token to
@@ -622,6 +660,7 @@ impl DeletionQueue {
                 client: DeletionQueueClient {
                     tx,
                     executor_tx: executor_tx.clone(),
+                    executed_rx,
                     lsn_table: lsn_table.clone(),
                 },
                 cancel: cancel.clone(),
@@ -632,6 +671,7 @@ impl DeletionQueue {
                     conf,
                     backend_rx,
                     executor_tx,
+                    executed_tx,
                     controller_upcall_client,
                     lsn_table.clone(),
                     cancel.clone(),
@@ -1228,6 +1268,7 @@ pub(crate) mod mock {
             DeletionQueueClient {
                 tx: self.tx.clone(),
                 executor_tx: self.executor_tx.clone(),
+                executed_rx: todo!(),
                 lsn_table: self.lsn_table.clone(),
             }
         }
