@@ -4,6 +4,7 @@ pub mod delete;
 pub(crate) mod detach_ancestor;
 mod eviction_task;
 pub(crate) mod handle;
+mod heatmap_layers_downloader;
 pub(crate) mod import_pgdata;
 mod init;
 pub mod layer_manager;
@@ -463,6 +464,10 @@ pub struct Timeline {
     pub(crate) page_trace: ArcSwapOption<Sender<PageTraceEvent>>,
 
     previous_heatmap: ArcSwapOption<PreviousHeatmap>,
+
+    /// May host a background Tokio task which downloads all the layers from the current
+    /// heatmap on demand.
+    heatmap_layers_downloader: Mutex<Option<heatmap_layers_downloader::HeatmapLayersDownloader>>,
 }
 
 pub(crate) enum PreviousHeatmap {
@@ -2699,6 +2704,8 @@ impl Timeline {
                 page_trace: Default::default(),
 
                 previous_heatmap: ArcSwapOption::from_pointee(previous_heatmap),
+
+                heatmap_layers_downloader: Mutex::new(None),
             };
 
             result.repartition_threshold =

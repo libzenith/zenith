@@ -1454,6 +1454,45 @@ async fn timeline_layer_scan_disposable_keys(
     )
 }
 
+async fn timeline_download_heatmap_layers_handler(
+    request: Request<Body>,
+    _cancel: CancellationToken,
+) -> Result<Response<Body>, ApiError> {
+    let tenant_shard_id: TenantShardId = parse_request_param(&request, "tenant_shard_id")?;
+    let timeline_id: TimelineId = parse_request_param(&request, "timeline_id")?;
+    let concurrency: usize = parse_query_param(&request, "concurrency")?.unwrap_or(16);
+
+    check_permission(&request, Some(tenant_shard_id.tenant_id))?;
+
+    let state = get_state(&request);
+    let timeline =
+        active_timeline_of_active_tenant(&state.tenant_manager, tenant_shard_id, timeline_id)
+            .await?;
+
+    timeline.start_heatmap_layers_download(concurrency).await?;
+
+    json_response(StatusCode::ACCEPTED, ())
+}
+
+async fn timeline_abort_download_heatmap_layers_handler(
+    request: Request<Body>,
+    _cancel: CancellationToken,
+) -> Result<Response<Body>, ApiError> {
+    let tenant_shard_id: TenantShardId = parse_request_param(&request, "tenant_shard_id")?;
+    let timeline_id: TimelineId = parse_request_param(&request, "timeline_id")?;
+
+    check_permission(&request, Some(tenant_shard_id.tenant_id))?;
+
+    let state = get_state(&request);
+    let timeline =
+        active_timeline_of_active_tenant(&state.tenant_manager, tenant_shard_id, timeline_id)
+            .await?;
+
+    timeline.abort_heatmap_layers_download();
+
+    json_response(StatusCode::OK, ())
+}
+
 async fn layer_download_handler(
     request: Request<Body>,
     _cancel: CancellationToken,
@@ -3615,6 +3654,14 @@ pub fn make_router(
         .get(
             "/v1/tenant/:tenant_shard_id/timeline/:timeline_id/layer",
             |r| api_handler(r, layer_map_info_handler),
+        )
+        .post(
+            "/v1/tenant/:tenant_shard_id/timeline/:timeline_id/download_heatmap_layers",
+            |r| api_handler(r, timeline_download_heatmap_layers_handler),
+        )
+        .delete(
+            "/v1/tenant/:tenant_shard_id/timeline/:timeline_id/download_heatmap_layers",
+            |r| api_handler(r, timeline_abort_download_heatmap_layers_handler),
         )
         .get(
             "/v1/tenant/:tenant_shard_id/timeline/:timeline_id/layer/:layer_file_name",
