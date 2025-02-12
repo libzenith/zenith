@@ -7,7 +7,9 @@ use super::Timeline;
 use crate::span::debug_assert_current_span_has_tenant_and_timeline_id;
 use crate::tenant::remote_timeline_client::ShutdownIfArchivedError;
 use crate::tenant::timeline::delete::{make_timeline_delete_guard, TimelineDeleteGuardKind};
-use crate::tenant::{OffloadedTimeline, Tenant, TenantManifestError, TimelineOrOffloaded};
+use crate::tenant::{
+    DeleteTimelineError, OffloadedTimeline, Tenant, TenantManifestError, TimelineOrOffloaded,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum OffloadError {
@@ -37,12 +39,25 @@ pub(crate) async fn offload_timeline(
     debug_assert_current_span_has_tenant_and_timeline_id();
     tracing::info!("offloading archived timeline");
 
-    let (timeline, guard) = make_timeline_delete_guard(
+    let delete_guard_res = make_timeline_delete_guard(
         tenant,
         timeline.timeline_id,
         TimelineDeleteGuardKind::Offload,
-    )
-    .map_err(|e| OffloadError::Other(anyhow::anyhow!(e)))?;
+    );
+    if let Err(DeleteTimelineError::HasChildren(children)) = delete_guard_res {
+        let is_archived = timeline.is_archived();
+        if is_archived == Some(true) {
+            tracing::error!("timeline is archived but has non-archived children: {children:?}");
+            return Err(OffloadError::NotArchived);
+        }
+        tracing::info!(
+            ?is_archived,
+            "timeline is not archived and has unarchived children"
+        );
+        return Err(OffloadError::NotArchived);
+    };
+    let (timeline, guard) =
+        delete_guard_res.map_err(|e| OffloadError::Other(anyhow::anyhow!(e)))?;
 
     let TimelineOrOffloaded::Timeline(timeline) = timeline else {
         tracing::error!("timeline already offloaded, but given timeline object");
