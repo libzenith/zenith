@@ -48,11 +48,41 @@ class FastImport(AbstractNeonCli):
             raise Exception(f"Working directory '{workdir}' does not exist")
         self.workdir = workdir
 
+    def run_pgdata(
+        self,
+        s3prefix: str | None = None,
+        pg_port: int | None = None,
+        source_connection_string: str | None = None,
+        interactive: bool = False,
+    ):
+        return self.run(
+            "pgdata",
+            s3prefix=s3prefix,
+            pg_port=pg_port,
+            source_connection_string=source_connection_string,
+            interactive=interactive,
+        )
+
+    def run_dump_restore(
+        self,
+        s3prefix: str | None = None,
+        source_connection_string: str | None = None,
+        destination_connection_string: str | None = None,
+    ):
+        return self.run(
+            "dump-restore",
+            s3prefix=s3prefix,
+            source_connection_string=source_connection_string,
+            destination_connection_string=destination_connection_string,
+        )
+
     def run(
         self,
-        pg_port: int,
-        source_connection_string: str | None = None,
+        command: str,
         s3prefix: str | None = None,
+        pg_port: int | None = None,
+        source_connection_string: str | None = None,
+        destination_connection_string: str | None = None,
         interactive: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         if self.cmd is not None:
@@ -60,13 +90,17 @@ class FastImport(AbstractNeonCli):
         args = [
             f"--pg-bin-dir={self.pg_bin}",
             f"--pg-lib-dir={self.pg_lib}",
-            f"--pg-port={pg_port}",
             f"--working-directory={self.workdir}",
         ]
-        if source_connection_string is not None:
-            args.append(f"--source-connection-string={source_connection_string}")
         if s3prefix is not None:
             args.append(f"--s3-prefix={s3prefix}")
+        args.append(command)
+        if pg_port is not None:
+            args.append(f"--pg-port={pg_port}")
+        if source_connection_string is not None:
+            args.append(f"--source-connection-string={source_connection_string}")
+        if destination_connection_string is not None:
+            args.append(f"--destination-connection-string={destination_connection_string}")
         if interactive:
             args.append("--interactive")
 
