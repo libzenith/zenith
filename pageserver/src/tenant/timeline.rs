@@ -1557,6 +1557,7 @@ impl Timeline {
             let lsn = xlog_utils::normalize_lsn(lsn, WAL_SEGMENT_SIZE);
 
             let mut gc_info = self.gc_info.write().unwrap();
+            let planned_cutoff = gc_info.min_cutoff();
 
             let valid_until = SystemTime::now() + length;
 
@@ -1577,7 +1578,7 @@ impl Timeline {
                     existing_lease.clone()
                 }
                 Entry::Vacant(vacant) => {
-                    // Reject already GC-ed LSN (lsn < latest_gc_cutoff) if we are in AttachedSingle and
+                    // Reject already GC-ed LSN if we are in AttachedSingle and
                     // not blocked by the lsn lease deadline.
                     let validate = {
                         let conf = self.tenant_conf.load();
@@ -1588,7 +1589,10 @@ impl Timeline {
                     if init || validate {
                         let latest_gc_cutoff_lsn = self.get_latest_gc_cutoff_lsn();
                         if lsn < *latest_gc_cutoff_lsn {
-                            bail!("tried to request a page version that was garbage collected. requested at {} gc cutoff {}", lsn, *latest_gc_cutoff_lsn);
+                            bail!("tried to request an lsn lease for an lsn below the latest gc cutoff. requested at {} gc cutoff {}", lsn, *latest_gc_cutoff_lsn);
+                        }
+                        if lsn < planned_cutoff {
+                            bail!("tried to request an lsn lease for an lsn below the planned gc cutoff. requested at {} planned gc cutoff {}", lsn, planned_cutoff);
                         }
                     }
 
