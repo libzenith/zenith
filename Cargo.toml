@@ -81,6 +81,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.0", features = ["derive", "env"] }
 clashmap = { version = "1.0", features = ["raw-api"] }
 comfy-table = "7.1"
+console-subscriber = { version = "0.4.1", features = ["parking_lot", "grpc-web"] }
 const_format = "0.2"
 crc32c = "0.6"
 diatomic-waker = { version = "0.2.3" }

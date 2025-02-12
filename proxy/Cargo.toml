@@ -27,6 +27,7 @@ chrono.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 clashmap.workspace = true
 compute_api.workspace = true
+console-subscriber.workspace = true
 consumption_metrics.workspace = true
 env_logger.workspace = true
 framed-websockets.workspace = true
@@ -131,3 +132,6 @@ rstest.workspace = true
 walkdir.workspace = true
 rand_distr = "0.4"
 tokio-postgres.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
