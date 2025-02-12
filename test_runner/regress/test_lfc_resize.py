@@ -72,6 +72,11 @@ def test_lfc_resize(neon_simple_env: NeonEnv, pg_bin: PgBin):
 
     thread.join()
 
+    # Fill LFC: seqscan should fetch the whole table in cache.
+    # It is needed for further correct calculation of LFC file size in blocks:
+    # otherwise sparse chunks of LFC will be calculated incorrectly.
+    cur.execute("select sum(abalance) from pgbench_accounts")
+
     # Before shrinking the cache, check that it really is large now
     (lfc_file_size, lfc_file_blocks) = get_lfc_size()
     assert int(lfc_file_blocks) > 128 * 1024
