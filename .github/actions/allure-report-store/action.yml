@@ -16,6 +16,11 @@ runs:
   using: "composite"
 
   steps:
+    - name: Start log group
+      # https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/workflow-commands-for-github-actions#grouping-log-lines
+      shell: bash -euo pipefail {0}
+      run: echo "::group::allure-report-store"
+
     - name: Set variables
       shell: bash -euxo pipefail {0}
       run: |
@@ -81,3 +86,8 @@ runs:
       shell: bash -euxo pipefail {0}
       run: |
         rm -rf ${REPORT_DIR}
+
+    - name: Close log group
+      if: always()
+      shell: bash -euo pipefail {0}
+      run: echo "::endgroup::"

@@ -29,6 +29,11 @@ runs:
   using: "composite"
 
   steps:
+    - name: Start log group
+      # https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/workflow-commands-for-github-actions#grouping-log-lines
+      shell: bash -euo pipefail {0}
+      run: echo "::group::allure-report-generate"
+
     # We're using some of env variables quite offen, so let's set them once.
     #
     # It would be nice to have them set in common runs.env[0] section, but it doesn't work[1]
@@ -245,3 +250,8 @@ runs:
             target_url: `${REPORT_URL}`,
             context: 'Allure report',
           })
+
+    - name: Close log group
+      if: always()
+      shell: bash -euo pipefail {0}
+      run: echo "::endgroup::"
