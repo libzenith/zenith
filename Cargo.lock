@@ -786,7 +786,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#985db729824be324ed11527e45de722250028d9e"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#c36ed4c039bb3d59b5a1705f2cc337636c73b541"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -815,7 +815,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#985db729824be324ed11527e45de722250028d9e"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#c36ed4c039bb3d59b5a1705f2cc337636c73b541"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -834,7 +834,7 @@ dependencies = [
 [[package]]
 name = "azure_storage"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#985db729824be324ed11527e45de722250028d9e"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#c36ed4c039bb3d59b5a1705f2cc337636c73b541"
 dependencies = [
  "RustyXML",
  "async-lock",
@@ -852,7 +852,7 @@ dependencies = [
 [[package]]
 name = "azure_storage_blobs"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#985db729824be324ed11527e45de722250028d9e"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#c36ed4c039bb3d59b5a1705f2cc337636c73b541"
 dependencies = [
  "RustyXML",
  "azure_core",
@@ -872,7 +872,7 @@ dependencies = [
 [[package]]
 name = "azure_svc_blobstorage"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#985db729824be324ed11527e45de722250028d9e"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#c36ed4c039bb3d59b5a1705f2cc337636c73b541"
 dependencies = [
  "azure_core",
  "bytes",
