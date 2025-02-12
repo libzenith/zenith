@@ -98,6 +98,7 @@ pub struct RequestContext {
     download_behavior: DownloadBehavior,
     access_stats_behavior: AccessStatsBehavior,
     page_content_kind: PageContentKind,
+    read_path_debug: bool,
 }
 
 /// The kind of access to the page cache.
@@ -155,6 +156,7 @@ impl RequestContextBuilder {
                 download_behavior: DownloadBehavior::Download,
                 access_stats_behavior: AccessStatsBehavior::Update,
                 page_content_kind: PageContentKind::Unknown,
+                read_path_debug: false,
             },
         }
     }
@@ -168,6 +170,7 @@ impl RequestContextBuilder {
                 download_behavior: original.download_behavior,
                 access_stats_behavior: original.access_stats_behavior,
                 page_content_kind: original.page_content_kind,
+                read_path_debug: original.read_path_debug,
             },
         }
     }
@@ -188,6 +191,11 @@ impl RequestContextBuilder {
 
     pub(crate) fn page_content_kind(mut self, k: PageContentKind) -> Self {
         self.inner.page_content_kind = k;
+        self
+    }
+
+    pub(crate) fn read_path_debug(mut self, b: bool) -> Self {
+        self.inner.read_path_debug = b;
         self
     }
 
@@ -290,5 +298,9 @@ impl RequestContext {
 
     pub(crate) fn page_content_kind(&self) -> PageContentKind {
         self.page_content_kind
+    }
+
+    pub(crate) fn read_path_debug(&self) -> bool {
+        self.read_path_debug
     }
 }
