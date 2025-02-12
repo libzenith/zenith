@@ -32,6 +32,7 @@ pub(crate) struct Node {
 
     listen_http_addr: String,
     listen_http_port: u16,
+    use_https: bool,
 
     listen_pg_addr: String,
     listen_pg_port: u16,
@@ -56,7 +57,7 @@ pub(crate) enum AvailabilityTransition {
 
 impl Node {
     pub(crate) fn base_url(&self) -> String {
-        format!("http://{}:{}", self.listen_http_addr, self.listen_http_port)
+        format!("{}://{}:{}", if self.use_https { "https" } else {"http"}, self.listen_http_addr, self.listen_http_port)
     }
 
     pub(crate) fn get_id(&self) -> NodeId {
@@ -82,6 +83,7 @@ impl Node {
         self.id == register_req.node_id
             && self.listen_http_addr == register_req.listen_http_addr
             && self.listen_http_port == register_req.listen_http_port
+            && self.use_https == register_req.use_https
             && self.listen_pg_addr == register_req.listen_pg_addr
             && self.listen_pg_port == register_req.listen_pg_port
             && self.availability_zone_id == register_req.availability_zone_id
@@ -95,6 +97,7 @@ impl Node {
             node_id: self.id,
             listen_http_addr: self.listen_http_addr.clone(),
             listen_http_port: self.listen_http_port,
+            use_https: self.use_https,
             listen_pg_addr: self.listen_pg_addr.clone(),
             listen_pg_port: self.listen_pg_port,
         }
@@ -179,6 +182,7 @@ impl Node {
         id: NodeId,
         listen_http_addr: String,
         listen_http_port: u16,
+        use_https: bool,
         listen_pg_addr: String,
         listen_pg_port: u16,
         availability_zone_id: AvailabilityZone,
@@ -187,6 +191,7 @@ impl Node {
             id,
             listen_http_addr,
             listen_http_port,
+            use_https,
             listen_pg_addr,
             listen_pg_port,
             scheduling: NodeSchedulingPolicy::Active,
@@ -202,6 +207,7 @@ impl Node {
             scheduling_policy: self.scheduling.into(),
             listen_http_addr: self.listen_http_addr.clone(),
             listen_http_port: self.listen_http_port as i32,
+            use_https: self.use_https,
             listen_pg_addr: self.listen_pg_addr.clone(),
             listen_pg_port: self.listen_pg_port as i32,
             availability_zone_id: self.availability_zone_id.0.clone(),
@@ -217,6 +223,7 @@ impl Node {
                 .expect("Bad scheduling policy in DB"),
             listen_http_addr: np.listen_http_addr,
             listen_http_port: np.listen_http_port as u16,
+            use_https: np.use_https,
             listen_pg_addr: np.listen_pg_addr,
             listen_pg_port: np.listen_pg_port as u16,
             availability_zone_id: AvailabilityZone(np.availability_zone_id),
@@ -302,6 +309,7 @@ impl Node {
             availability_zone_id: self.availability_zone_id.0.clone(),
             listen_http_addr: self.listen_http_addr.clone(),
             listen_http_port: self.listen_http_port,
+            use_https: self.use_https,
             listen_pg_addr: self.listen_pg_addr.clone(),
             listen_pg_port: self.listen_pg_port,
         }

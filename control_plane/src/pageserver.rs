@@ -240,6 +240,7 @@ impl PageServerNode {
                 postgres_port: self.pg_connection_config.port(),
                 http_host: "localhost".to_string(),
                 http_port,
+                use_https: false,
                 other: HashMap::from([(
                     "availability_zone_id".to_string(),
                     serde_json::json!(az_id),
