@@ -81,15 +81,8 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
             [ $EXT_SUCCESS -eq 0 ] && FAILED=$(tail -1 testout.txt | awk '{for(i=1;i<=NF;i++){print "/ext-src/"$i;}}')
             [ $CONTRIB_SUCCESS -eq 0 ] && CONTRIB_FAILED=$(tail -1 testout_contrib.txt | awk '{for(i=0;i<=NF;i++){print "/postgres/contrib/"$i;}}')
             for d in $FAILED $CONTRIB_FAILED; do
-                dn="$(basename $d)"
-                rm -rf $dn
-                mkdir $dn
-                docker cp $TEST_CONTAINER_NAME:$d/regression.diffs $dn || [ $? -eq 1 ]
-                docker cp $TEST_CONTAINER_NAME:$d/regression.out $dn || [ $? -eq 1 ]
-                cat $dn/regression.out $dn/regression.diffs || true
-                rm -rf $dn
+                docker exec $TEST_CONTAINER_NAME bash -c 'for file in $(find '"$d"' -name regression.diffs -o -name regression.out); do cat $file; done' || [ $? -eq 1 ]
             done
-        rm -rf $FAILED
         exit 1
         fi
     fi

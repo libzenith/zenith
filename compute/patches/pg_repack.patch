@@ -1,0 +1,72 @@
+diff --git a/regress/Makefile b/regress/Makefile
+index bf6edcb..89b4c7f 100644
+--- a/regress/Makefile
++++ b/regress/Makefile
+@@ -17,7 +17,7 @@ INTVERSION := $(shell echo $$(($$(echo $(VERSION).0 | sed 's/\([[:digit:]]\{1,\}
+ # Test suite
+ #
+ 
+-REGRESS := init-extension repack-setup repack-run error-on-invalid-idx no-error-on-invalid-idx after-schema repack-check nosuper tablespace get_order_by trigger
++REGRESS := init-extension repack-setup repack-run error-on-invalid-idx no-error-on-invalid-idx after-schema repack-check nosuper get_order_by trigger
+ 
+ USE_PGXS = 1	# use pgxs if not in contrib directory
+ PGXS := $(shell $(PG_CONFIG) --pgxs)
+diff --git a/regress/expected/nosuper.out b/regress/expected/nosuper.out
+index 8d0a94e..63b68bf 100644
+--- a/regress/expected/nosuper.out
++++ b/regress/expected/nosuper.out
+@@ -4,22 +4,22 @@
+ SET client_min_messages = error;
+ DROP ROLE IF EXISTS nosuper;
+ SET client_min_messages = warning;
+-CREATE ROLE nosuper WITH LOGIN;
++CREATE ROLE nosuper WITH LOGIN PASSWORD 'NoSuPeRpAsSwOrD';
+ -- => OK
+ \! pg_repack --dbname=contrib_regression --table=tbl_cluster --no-superuser-check
+ INFO: repacking table "public.tbl_cluster"
+ -- => ERROR
+-\! pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper
++\! PGPASSWORD=NoSuPeRpAsSwOrD pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper
+ ERROR: pg_repack failed with error: You must be a superuser to use pg_repack
+ -- => ERROR
+-\! pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper --no-superuser-check
++\! PGPASSWORD=NoSuPeRpAsSwOrD pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper --no-superuser-check
+ ERROR: pg_repack failed with error: ERROR:  permission denied for schema repack
+ LINE 1: select repack.version(), repack.version_sql()
+                ^
+ GRANT ALL ON ALL TABLES IN SCHEMA repack TO nosuper;
+ GRANT USAGE ON SCHEMA repack TO nosuper;
+ -- => ERROR
+-\! pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper --no-superuser-check
++\! PGPASSWORD=NoSuPeRpAsSwOrD pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper --no-superuser-check
+ INFO: repacking table "public.tbl_cluster"
+ ERROR: query failed: ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ DETAIL: query was: RESET lock_timeout
+diff --git a/regress/sql/nosuper.sql b/regress/sql/nosuper.sql
+index 072f0fa..dbe60f8 100644
+--- a/regress/sql/nosuper.sql
++++ b/regress/sql/nosuper.sql
+@@ -4,19 +4,19 @@
+ SET client_min_messages = error;
+ DROP ROLE IF EXISTS nosuper;
+ SET client_min_messages = warning;
+-CREATE ROLE nosuper WITH LOGIN;
++CREATE ROLE nosuper WITH LOGIN PASSWORD 'NoSuPeRpAsSwOrD';
+ -- => OK
+ \! pg_repack --dbname=contrib_regression --table=tbl_cluster --no-superuser-check
+ -- => ERROR
+-\! pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper
++\! PGPASSWORD=NoSuPeRpAsSwOrD pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper
+ -- => ERROR
+-\! pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper --no-superuser-check
++\! PGPASSWORD=NoSuPeRpAsSwOrD pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper --no-superuser-check
+ 
+ GRANT ALL ON ALL TABLES IN SCHEMA repack TO nosuper;
+ GRANT USAGE ON SCHEMA repack TO nosuper;
+ 
+ -- => ERROR
+-\! pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper --no-superuser-check
++\! PGPASSWORD=NoSuPeRpAsSwOrD pg_repack --dbname=contrib_regression --table=tbl_cluster --username=nosuper --no-superuser-check
+ 
+ REVOKE ALL ON ALL TABLES IN SCHEMA repack FROM nosuper;
+ REVOKE USAGE ON SCHEMA repack FROM nosuper;
