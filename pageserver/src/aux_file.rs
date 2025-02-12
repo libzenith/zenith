@@ -77,7 +77,7 @@ pub fn encode_aux_file_key(path: &str) -> Key {
         aux_hash_to_metadata_key(AUX_DIR_PG_LOGICAL, 0xFF, fname.as_bytes())
     } else if let Some(fname) = path.strip_prefix("pg_replslot/") {
         aux_hash_to_metadata_key(AUX_DIR_PG_REPLSLOT, 0x01, fname.as_bytes())
-    } else if let Some(fname) = path.strip_prefix("pg_stat/pgstat.stat") {
+    } else if let Some(fname) = path.strip_prefix("pg_stat/") {
         aux_hash_to_metadata_key(AUX_DIR_PG_STAT, 0x01, fname.as_bytes())
     } else {
         if cfg!(debug_assertions) {
