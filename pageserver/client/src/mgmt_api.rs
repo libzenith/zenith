@@ -477,6 +477,26 @@ impl Client {
         self.request(Method::POST, &uri, ()).await.map(|_| ())
     }
 
+    pub async fn timeline_download_heatmap_layers(
+        &self,
+        tenant_shard_id: TenantShardId,
+        timeline_id: TimelineId,
+        concurrency: Option<usize>,
+    ) -> Result<()> {
+        let mut path = reqwest::Url::parse(&format!(
+            "{}/v1/tenant/{}/timeline/{}/download_heatmap_layers",
+            self.mgmt_api_endpoint, tenant_shard_id, timeline_id
+        ))
+        .expect("Cannot build URL");
+
+        if let Some(concurrency) = concurrency {
+            path.query_pairs_mut()
+                .append_pair("concurrency", &format!("{}", concurrency));
+        }
+
+        self.request(Method::POST, path, ()).await.map(|_| ())
+    }
+
     pub async fn tenant_reset(&self, tenant_shard_id: TenantShardId) -> Result<()> {
         let uri = format!(
             "{}/v1/tenant/{}/reset",

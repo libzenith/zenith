@@ -516,6 +516,24 @@ async fn handle_tenant_timeline_block_unblock_gc(
     json_response(StatusCode::OK, ())
 }
 
+async fn handle_tenant_timeline_download_heatmap_layers(
+    service: Arc<Service>,
+    req: Request<Body>,
+) -> Result<Response<Body>, ApiError> {
+    let tenant_shard_id: TenantShardId = parse_request_param(&req, "tenant_shard_id")?;
+
+    check_permissions(&req, Scope::PageServerApi)?;
+
+    let timeline_id: TimelineId = parse_request_param(&req, "timeline_id")?;
+    let concurrency: Option<usize> = parse_query_param(&req, "concurrency")?;
+
+    service
+        .tenant_timeline_download_heatmap_layers(tenant_shard_id, timeline_id, concurrency)
+        .await?;
+
+    json_response(StatusCode::OK, ())
+}
+
 async fn handle_tenant_timeline_passthrough(
     service: Arc<Service>,
     req: Request<Body>,
@@ -2067,6 +2085,16 @@ pub fn make_router(
                     r,
                     |s, r| handle_tenant_timeline_block_unblock_gc(s, r, BlockUnblock::Unblock),
                     RequestName("v1_tenant_timeline_block_unblock_gc"),
+                )
+            },
+        )
+        .post(
+            "/v1/tenant/:tenant_shard_id/timeline/:timeline_id/download_heatmap_layers",
+            |r| {
+                tenant_service_handler(
+                    r,
+                    handle_tenant_timeline_download_heatmap_layers,
+                    RequestName("v1_tenant_timeline_download_heatmap_layers"),
                 )
             },
         )

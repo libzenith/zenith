@@ -2433,6 +2433,14 @@ class NeonStorageController(MetricsGetter, LogUtils):
         response.raise_for_status()
         return [TenantShardId.parse(tid) for tid in response.json()["updated"]]
 
+    def download_heatmap_layers(self, tenant_shard_id: TenantShardId, timeline_id: TimelineId):
+        response = self.request(
+            "POST",
+            f"{self.api}/v1/tenant/{tenant_shard_id}/timeline/{timeline_id}/download_heatmap_layers",
+            headers=self.headers(TokenScope.ADMIN),
+        )
+        response.raise_for_status()
+
     def __enter__(self) -> Self:
         return self
 
